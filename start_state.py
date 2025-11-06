@@ -32,7 +32,8 @@ def uniform(start_state_cfg, cluster, applications, **kwargs):
     application = applications[start_state_cfg.application_id]
     allocator = application.allocator
     servers = cluster.servers
-
+    print("servers are", servers)
+    
     instance_cfg = start_state_cfg.instance
     print("instance cfg is", instance_cfg.num_instances)
     parallelism = ModelParallelism(pipeline_parallelism=instance_cfg.pipeline_parallelism,

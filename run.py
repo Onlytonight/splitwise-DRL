@@ -28,6 +28,8 @@ def run_simulation(cfg):
     arbiter = init_arbiter(cfg, cluster)
     applications = init_applications(cfg, cluster, router, arbiter)
     trace = init_trace(cfg)
+    print("trace is", trace)
+    
     for application in applications.values():
         router.add_application(application)
         arbiter.add_application(application)

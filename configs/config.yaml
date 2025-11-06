@@ -32,4 +32,5 @@ hydra:
   launcher:
     ray:
       init:
-        address: "10.0.0.9:6379"
+        address: "192.168.10.18:6379"
+        object_store_memory: null
