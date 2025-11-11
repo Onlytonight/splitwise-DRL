@@ -794,7 +794,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         if len(instances) == 0:
             return None
-        print("find_best_prompt_instance...")
         prompt_instance = min(instances,
                               key=lambda instance: instance.sched_pending_tokens)
         return prompt_instance
@@ -805,12 +804,19 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         if len(instances) == 0:
             return None
-        print("find_best_token_instance...")
         token_instance = min(instances,
                              key=lambda instance: (instance.sched_memory))
-        print("best tokeninstance", token_instance)
         if self.is_memory_loaded(token_instance, [prompt_task, token_task]):
-            return None
+            # 如果找不到合适的token实例，返回负载最低的prompt实例，并将其转换为token实例
+            if len(self.prompt_instances) > 0:
+                # 找到负载最低的prompt实例
+                idlest_prompt_instance = min(self.prompt_instances,
+                                             key=lambda instance: instance.sched_pending_tokens)
+                # 将该prompt实例从prompt池移到token池
+                self.prompt_instances.remove(idlest_prompt_instance)
+                self.token_instances.append(idlest_prompt_instance)
+                return idlest_prompt_instance
+            raise ValueError("No prompt instances available, loading is too high")
         return token_instance
 
     def notify_free_instance(self, instance):
@@ -832,7 +838,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         - If prompt queue > 4 * token pool size, convert token instance to prompt
         - If token queue < 1/4 * prompt pool size, convert prompt instance to token
         """
-        if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0):
+        if len(self.prompt_instances) == 0 or len(self.token_instances) == 0:
             raise ValueError("No instances available")
 
         prompt_task = request.root_node
