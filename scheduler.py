@@ -772,7 +772,9 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         Check if instance is loaded by task
         """
         request_memory = sum(task.max_memory(instance) for task in tasks)
+        print("is_memory_loaded...")
         if instance.sched_memory + request_memory >= instance.max_memory:
+            print("is_memory_loaded...true")
             return True
         return False
 
