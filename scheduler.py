@@ -821,7 +821,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         - If prompt queue > 4 * token pool size, convert token instance to prompt
         - If token queue < 1/4 * prompt pool size, convert prompt instance to token
         """
-        if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0) == 0:
+        if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0):
             raise ValueError("No instances available")
 
         prompt_task = request.root_node
