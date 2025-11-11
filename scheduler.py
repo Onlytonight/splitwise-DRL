@@ -809,10 +809,16 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         return token_instance
 
     def notify_free_instance(self, instance):
-        """
-        No operation needed for this scheduler
-        """
-        pass
+        if instance.sched_tag == "mixed":
+            instance.sched_tag = None
+            self.mixed_instances.remove(instance)
+            if instance.tag == "prompt":
+                self.prompt_instances.append(instance)
+            elif instance.tag == "token":
+                self.token_instances.append(instance)
+            else:
+                raise ValueError(f"Unsupported instance tag: {instance.tag} on \
+                    {instance.name}_{instance.instance_id}")
 
     def schedule(self, request, *args, **kwargs):
         """
