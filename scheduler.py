@@ -792,6 +792,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         if len(instances) == 0:
             return None
+        print("find_best_prompt_instance...")
         prompt_instance = min(instances,
                               key=lambda instance: instance.sched_pending_tokens)
         return prompt_instance
@@ -802,8 +803,10 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         if len(instances) == 0:
             return None
+        print("find_best_token_instance...")
         token_instance = min(instances,
                              key=lambda instance: (instance.sched_memory))
+        print("best tokeninstance", token_instance)
         if self.is_memory_loaded(token_instance, [prompt_task, token_task]):
             return None
         return token_instance
