@@ -793,6 +793,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         Check if prompt queue is long
         """
         if len(instances) == 0:
+            print("find_best_prompt_instance...no instances")
             return None
         prompt_instance = min(instances,
                               key=lambda instance: instance.sched_pending_tokens)
@@ -803,6 +804,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         Checks if instance memory is full
         """
         if len(instances) == 0:
+            print("find_best_token_instance...no instances")
             return None
         token_instance = min(instances,
                              key=lambda instance: (instance.sched_memory))
@@ -869,17 +871,8 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             #print(f"Converted prompt instance to token due to token shortage: {total_token_queue} < 1/4 * {len(self.prompt_instances)}")
 
         # Find best instances for prompt and token tasks
-        prompt_instance = None
-        for instances in [self.prompt_instances]:
-            prompt_instance = self.find_best_prompt_instance(instances, prompt_task)
-            if prompt_instance is not None:
-                break
-
-        token_instance = None
-        for instances in [self.token_instances]:
-            token_instance = self.find_best_token_instance(instances, prompt_task, token_task)
-            if token_instance is not None:
-                break
+        prompt_instance = self.find_best_prompt_instance(self.prompt_instances, prompt_task)
+        token_instance = self.find_best_token_instance(self.token_instances, prompt_task, token_task)
 
         if prompt_instance != token_instance:
             # ship KV-cache between instances
