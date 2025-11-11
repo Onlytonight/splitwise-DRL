@@ -765,7 +765,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.token_max_pending_batch_tokens = token_max_pending_batch_tokens
         self.transfer_bandwidth = transfer_bandwidth * 1024**3 # convert to B/s
         self.prompt_instances = []
-        self.mixed_instances = []
         self.token_instances = []
 
     def is_memory_loaded(self, instance, tasks):
@@ -822,8 +821,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         - If prompt queue > 4 * token pool size, convert token instance to prompt
         - If token queue < 1/4 * prompt pool size, convert prompt instance to token
         """
-        if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0) \
-            and len(self.mixed_instances) == 0:
+        if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0) == 0:
             raise ValueError("No instances available")
 
         prompt_task = request.root_node
@@ -855,13 +853,13 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
 
         # Find best instances for prompt and token tasks
         prompt_instance = None
-        for instances in [self.prompt_instances, self.mixed_instances]:
+        for instances in [self.prompt_instances]:
             prompt_instance = self.find_best_prompt_instance(instances, prompt_task)
             if prompt_instance is not None:
                 break
 
         token_instance = None
-        for instances in [self.token_instances, self.mixed_instances]:
+        for instances in [self.token_instances]:
             token_instance = self.find_best_token_instance(instances, prompt_task, token_task)
             if token_instance is not None:
                 break
