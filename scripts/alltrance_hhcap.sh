@@ -1,7 +1,7 @@
 TRACE=rr_code_30,rr_code_40,rr_code_50,rr_code_60,rr_code_70,rr_code_80,rr_code_90,rr_code_100,rr_code_110,rr_code_120,rr_code_130,rr_code_140,rr_code_150,rr_code_160,rr_conv_170,rr_conv_180
 SEED=0
 
-python run.py \
+python run.py --multirun\
     applications.0.scheduler=mixed_pool \
     cluster=half_half \
     cluster.servers.0.count=0 \
