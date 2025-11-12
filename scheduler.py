@@ -774,7 +774,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         request_memory = sum(task.max_memory(instance) for task in tasks)
         if instance.sched_memory + request_memory >= instance.max_memory:
-            print("is memory loaded...true")
+            # print("is memory loaded...true")
             return True
         return False
 
@@ -814,7 +814,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
 
     def transfer_best_token_to_prompt(self):
         if len(self.token_instances) <= 1:
-            print("can not transfer best token to prompt ")
+            # print("can not transfer best token to prompt ")
             return None
         idlest_token_instance = min(self.token_instances,
                                     key=lambda instance: instance.sched_pending_tokens)
@@ -824,7 +824,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
 
     def transfer_best_prompt_to_token(self):
         if len(self.prompt_instances) <= 1:
-            print("can not transfer best prompt to token ")
+            # print("can not transfer best prompt to token ")
             return None
 
         idlest_prompt_instance = min(self.prompt_instances,
@@ -845,6 +845,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             else:
                 raise ValueError(f"Unsupported instance tag: {instance.tag} on \
                     {instance.name}_{instance.instance_id}")
+            print("prompt instance num is",len(self.prompt_instances),",token instance num is",len(self.token_instances))
 
     def schedule(self, request, *args, **kwargs):
         """
