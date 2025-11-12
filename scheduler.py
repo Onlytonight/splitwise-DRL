@@ -845,7 +845,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             else:
                 raise ValueError(f"Unsupported instance tag: {instance.tag} on \
                     {instance.name}_{instance.instance_id}")
-            print("prompt instance num is",len(self.prompt_instances),",token instance num is",len(self.token_instances))
 
     def schedule(self, request, *args, **kwargs):
         """
@@ -863,7 +862,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         # Calculate queue ratios for adaptive conversion
         total_prompt_queue = sum(instance.sched_pending_tokens for instance in self.prompt_instances)
         total_token_queue = sum(instance.sched_pending_tokens for instance in self.token_instances)
-        
+
         # Check if we need to convert instances based on queue ratios
         # Convert token instance to prompt if prompt queue is more than 4x token pool
         if len(self.token_instances) > 0 and total_prompt_queue > self.load_balance_fac * max(1, len(self.token_instances)):
@@ -914,3 +913,4 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         # bookkeeping
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
+        print("prompt instance num is", len(self.prompt_instances), ",token instance num is", len(self.token_instances))

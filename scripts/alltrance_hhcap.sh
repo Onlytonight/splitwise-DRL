@@ -1,5 +1,5 @@
 python run.py --multirun\
-    applications.0.scheduler=adaptive_mixed_pool \
+    applications.0.scheduler=mixed_pool \
     cluster=hhcap_half_half \
     cluster.servers.0.count=5 \
     cluster.servers.1.count=35 \
