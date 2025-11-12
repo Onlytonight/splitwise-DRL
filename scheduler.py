@@ -766,6 +766,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.transfer_bandwidth = transfer_bandwidth * 1024**3 # convert to B/s
         self.prompt_instances = []
         self.token_instances = []
+        self.load_balance_fac = 8
 
     def is_memory_loaded(self, instance, tasks):
         """
@@ -864,30 +865,33 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         
         # Check if we need to convert instances based on queue ratios
         # Convert token instance to prompt if prompt queue is more than 4x token pool
-        if len(self.token_instances) > 0 and total_prompt_queue > 4 * max(1, len(self.token_instances)):
-            # Find the most idle token instance and convert it to prompt
+        if len(self.token_instances) > 0 and total_prompt_queue > self.load_balance_fac * max(1, len(self.token_instances)):
             self.transfer_best_token_to_prompt()
-            #print(f"Converted token instance to prompt due to prompt queue overload: {total_prompt_queue} > 4 * {len(self.token_instances)}")
-        
-        # Convert prompt instance to token if token queue is less than 1/4 of prompt pool
         elif len(self.prompt_instances) > 0 and (len(self.token_instances) == 0 or 
-             total_token_queue < (1/4) * max(1, len(self.prompt_instances))):
-            # Find the most idle prompt instance and convert it to token
+             total_token_queue < (1/self.load_balance_fac) * max(1, len(self.prompt_instances))):
             self.transfer_best_prompt_to_token()
-            #print(f"Converted prompt instance to token due to token shortage: {total_token_queue} < 1/4 * {len(self.prompt_instances)}")
 
         # Find best instances for prompt and token tasks
         prompt_instance = self.find_best_prompt_instance(self.prompt_instances, prompt_task)
         token_instance = self.find_best_token_instance(self.token_instances, prompt_task, token_task)
 
-        if prompt_instance is None:
-            # 如果找不到合适的prompt实例，返回负载最低的token实例
-            prompt_instance=self.find_best_token_instance(self.token_instances, prompt_task, token_task)
-        if token_instance is None:
-            # 如果找不到合适的token实例，返回负载最低的prompt实例
-            token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
+        if prompt_instance is not None and token_instance is not None:
+            # 极端情况，允许混合实例
+            if (len(self.prompt_instances)==1 and
+                    token_instance.sched_pending_tokens*self.load_balance_fac>prompt_instance.sched_memory):
+                token_instance = prompt_instance
+            if(len(self.token_instances)==1 and
+                    token_instance.sched_pending_tokens*self.load_balance_fac>prompt_instance.sched_memory):
+                prompt_instance = token_instance
+        else:
+            if prompt_instance is None:
+                # 如果找不到合适的prompt实例，返回负载最低的token实例
+                prompt_instance=self.find_best_token_instance(self.token_instances, prompt_task, token_task)
+            if token_instance is None:
+                # 如果找不到合适的token实例，返回负载最低的prompt实例
+                token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
         if prompt_instance is None or token_instance is None:
-            raise ValueError("No instances available")
+            raise ValueError("No instances available, load is too high")
 
         if prompt_instance != token_instance:
             # ship KV-cache between instances
