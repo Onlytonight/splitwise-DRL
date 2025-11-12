@@ -2,7 +2,7 @@ TRACE=rr_code_30,rr_code_40,rr_code_50,rr_code_60,rr_code_70,rr_code_80,rr_code_
 SEED=0
 
 python run.py --multirun\
-    applications.0.scheduler=mixed_pool \
+    applications.0.scheduler=adaptive_mixed_pool \
     cluster=half_half \
     cluster.servers.0.count=0 \
     cluster.servers.1.count=40 \
