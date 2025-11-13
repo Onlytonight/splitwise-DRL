@@ -13,7 +13,7 @@ from executor import Executor, ExecutorType
 from interconnect import DummyLink
 from performance_model import get_duration
 from simulator import clock, schedule_event, cancel_event, reschedule_event
-from task import Task, TaskType
+from task import Task, TaskType, TokenTask, PromptTask
 from flow import FlowType
 
 
@@ -790,6 +790,89 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             return True
         return False
 
+    def count_instance_types(self):
+        """
+        Count instances with different task combinations:
+        - Instances with both prompt and token tasks
+        - Instances with only prompt tasks
+        - Instances with only token tasks
+        """
+        mixed_instances_count = 0  # Both prompt and token tasks
+        prompt_only_instances_count = 0  # Only prompt tasks
+        token_only_instances_count = 0   # Only token tasks
+        
+        # Check all instances (both prompt and token instances)
+        all_instances = self.prompt_instances + self.token_instances
+        
+        for instance in all_instances:
+            has_prompt = False
+            has_token = False
+            
+            # Check pending queue
+            for task in instance.pending_queue:
+                if isinstance(task, PromptTask):
+                    has_prompt = True
+                elif isinstance(task, TokenTask):
+                    has_token = True
+            
+            # Check executing batch
+            for task in instance.batch:
+                if isinstance(task, PromptTask):
+                    has_prompt = True
+                elif isinstance(task, TokenTask):
+                    has_token = True
+            
+            # Categorize instance based on task types
+            if has_prompt and has_token:
+                mixed_instances_count += 1
+            elif has_prompt and not has_token:
+                prompt_only_instances_count += 1
+            elif has_token and not has_prompt:
+                token_only_instances_count += 1
+            # Note: We don't count instances with no tasks
+        
+        return {
+            "mixed_instances": mixed_instances_count,           # Both P and T tasks
+            "prompt_only_instances": prompt_only_instances_count,  # Only P tasks
+            "token_only_instances": token_only_instances_count     # Only T tasks
+        }
+
+    def adjust_instances_dynamically(self):
+        # 计算过载的prompt实例数
+        overloaded_prompt_count = 0
+        for instance in self.prompt_instances:
+            if instance.sched_pending_tokens > self.prompt_max_pending_batch_tokens * 0.8:
+                overloaded_prompt_count += 1
+
+        # 计算过载的token实例数
+        overloaded_token_count = 0
+        for instance in self.token_instances:
+            if instance.sched_memory > instance.max_memory * 0.8:
+                overloaded_token_count += 1
+
+        # 计算过载比例
+        prompt_overload_ratio = overloaded_prompt_count / len(self.prompt_instances) if self.prompt_instances else 0
+        token_overload_ratio = overloaded_token_count / len(self.token_instances) if self.token_instances else 0
+
+        # 根据相对负载情况调整实例数
+        # 如果prompt过载严重而token负载较轻，增加prompt实例
+        if prompt_overload_ratio > 0.8 and token_overload_ratio < 0.2 and len(self.token_instances) > 1:
+            self.transfer_best_token_to_prompt()
+
+        # 如果token过载严重而prompt负载较轻，增加token实例
+        elif token_overload_ratio > 0.8 and prompt_overload_ratio < 0.2 and len(self.prompt_instances) > 1:
+            self.transfer_best_prompt_to_token()
+
+        # 如果两者都负载较轻，可以适当减少实例数
+        elif prompt_overload_ratio < 0.2 and token_overload_ratio < 0.2:
+            # 根据具体情况决定减少哪种实例
+            if len(self.prompt_instances) > len(self.token_instances):
+                if len(self.prompt_instances) > 1:
+                    self.transfer_best_prompt_to_token()
+            else:
+                if len(self.token_instances) > 1:
+                    self.transfer_best_token_to_prompt()
+
     def find_best_prompt_instance(self, instances, prompt_task):
         """
         Check if prompt queue is long
@@ -848,12 +931,27 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
                 raise ValueError(f"Unsupported instance tag: {instance.tag} on \
                     {instance.name}_{instance.instance_id}")
 
+    def adjust_instances_by_queue_ratios(self):
+        """
+        Adjust instances based on queue length ratios between prompt and token instances.
+        - If prompt queue is much larger than token queue, convert token instance to prompt
+        - If token queue is much larger than prompt queue, convert prompt instance to token
+        """
+        # Calculate queue ratios for adaptive conversion
+        total_prompt_queue = sum(instance.sched_pending_tokens for instance in self.prompt_instances)
+        total_token_queue = sum(instance.sched_pending_tokens for instance in self.token_instances)
+
+        # Check if we need to convert instances based on queue ratios
+        # Convert token instance to prompt if prompt queue is more than load_balance_fac * token pool
+        if total_prompt_queue > self.load_balance_fac * total_token_queue:
+            self.transfer_best_token_to_prompt()
+        elif total_token_queue > total_prompt_queue * self.load_balance_fac:
+            self.transfer_best_prompt_to_token()
+            
     def schedule(self, request, *args, **kwargs):
         """
         Assigns each to the least loaded instance (by queue length)
-        Implements adaptive conversion logic based on queue ratios:
-        - If prompt queue > 4 * token pool size, convert token instance to prompt
-        - If token queue < 1/4 * prompt pool size, convert prompt instance to token
+        Implements adaptive conversion logic based on queue ratios
         """
         if len(self.prompt_instances) == 0 or len(self.token_instances) == 0:
             raise ValueError("No instances available")
@@ -861,23 +959,12 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         prompt_task = request.root_node
         token_task = next(request.successors(prompt_task))
 
-        # Calculate queue ratios for adaptive conversion
-        total_prompt_queue = sum(instance.sched_pending_tokens for instance in self.prompt_instances)
-        total_token_queue = sum(instance.sched_pending_tokens for instance in self.token_instances)
-
-        # Check if we need to convert instances based on queue ratios
-        # Convert token instance to prompt if prompt queue is more than 4x token pool
-        if  total_prompt_queue > self.load_balance_fac * total_token_queue:
-            self.transfer_best_token_to_prompt()
-        elif total_token_queue > total_prompt_queue * self.load_balance_fac:
-            self.transfer_best_prompt_to_token()
-
         # Find best instances for prompt and token tasks
         prompt_instance = self.find_best_prompt_instance(self.prompt_instances, prompt_task)
         token_instance = self.find_best_token_instance(self.token_instances, prompt_task, token_task)
 
         if prompt_instance is not None and token_instance is not None:
-            # 极端情况，允许混合实例
+            # 极端情况，最后一个token实例仍然空闲则允许一个混合实例
             if (len(self.prompt_instances)==1 and
                     token_instance.sched_pending_tokens*self.load_balance_fac>prompt_instance.sched_pending_tokens):
                 token_instance = prompt_instance
@@ -914,5 +1001,11 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         # bookkeeping
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
-        print("prompt queue  is",total_prompt_queue,",token queue is", total_token_queue,
-            ",prompt instance num is", len(self.prompt_instances), ",token instance num is", len(self.token_instances))
+        print("prompt instance num is", len(self.prompt_instances), ",token instance num is", len(self.token_instances))
+        
+        self.adjust_instances_dynamically()
+        # 统计并输出实例任务类型信息
+        instance_stats = self.count_instance_types()
+        print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "
+              f"纯Prompt实例(P): {instance_stats['prompt_only_instances']}, "
+              f"纯Token实例(T): {instance_stats['token_only_instances']}")
