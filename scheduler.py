@@ -914,5 +914,5 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         # bookkeeping
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
-        print("prompt queue and token queue is",total_prompt_queue, total_token_queue,
-            "prompt instance num is", len(self.prompt_instances), ",token instance num is", len(self.token_instances))
+        print("prompt queue  is",total_prompt_queue,",token queue is", total_token_queue,
+            ",prompt instance num is", len(self.prompt_instances), ",token instance num is", len(self.token_instances))
