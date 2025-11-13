@@ -768,7 +768,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.transfer_bandwidth = transfer_bandwidth * 1024**3 # convert to B/s
         self.prompt_instances = []
         self.token_instances = []
-        self.load_balance_fac = 8
+        self.load_balance_fac = 2
 
     def is_memory_loaded(self, instance, tasks):
         """
@@ -819,7 +819,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             # print("can not transfer best token to prompt ")
             return None
         idlest_token_instance = min(self.token_instances,
-                                    key=lambda instance: instance.sched_pending_tokens)
+                                    key=lambda instance: instance.sched_memory)
         self.token_instances.remove(idlest_token_instance)
         self.prompt_instances.append(idlest_token_instance)
         return idlest_token_instance
@@ -867,10 +867,9 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
 
         # Check if we need to convert instances based on queue ratios
         # Convert token instance to prompt if prompt queue is more than 4x token pool
-        if len(self.token_instances) > 0 and total_prompt_queue > self.load_balance_fac * max(1, len(self.token_instances)):
+        if  total_prompt_queue > self.load_balance_fac * total_token_queue:
             self.transfer_best_token_to_prompt()
-        elif len(self.prompt_instances) > 0 and (len(self.token_instances) == 0 or 
-             total_token_queue < (1/self.load_balance_fac) * max(1, len(self.prompt_instances))):
+        elif total_token_queue > total_prompt_queue * self.load_balance_fac:
             self.transfer_best_prompt_to_token()
 
         # Find best instances for prompt and token tasks
@@ -880,10 +879,10 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         if prompt_instance is not None and token_instance is not None:
             # 极端情况，允许混合实例
             if (len(self.prompt_instances)==1 and
-                    token_instance.sched_pending_tokens*self.load_balance_fac>prompt_instance.sched_memory):
+                    token_instance.sched_pending_tokens*self.load_balance_fac>prompt_instance.sched_pending_tokens):
                 token_instance = prompt_instance
-            if(len(self.token_instances)==1 and
-                    token_instance.sched_pending_tokens*self.load_balance_fac>prompt_instance.sched_memory):
+            if (len(self.token_instances)==1 and
+                    token_instance.sched_pending_tokens*self.load_balance_fac<prompt_instance.sched_pending_tokens):
                 prompt_instance = token_instance
         else:
             if prompt_instance is None:
