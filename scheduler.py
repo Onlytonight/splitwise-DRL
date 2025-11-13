@@ -769,6 +769,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.prompt_instances = []
         self.token_instances = []
         self.load_balance_fac = 2
+        sel
 
     def is_memory_loaded(self, instance, tasks):
         """
@@ -776,7 +777,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         request_memory = sum(task.max_memory(instance) for task in tasks)
         if instance.sched_memory + request_memory >= instance.max_memory:
-            # print("is memory loaded...true")
             return True
         return False
 
@@ -966,10 +966,10 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         if prompt_instance is not None and token_instance is not None:
             # 极端情况，最后一个token实例仍然空闲则允许一个混合实例
             if (len(self.prompt_instances)==1 and
-                    token_instance.sched_pending_tokens*self.load_balance_fac>prompt_instance.sched_pending_tokens):
+                    prompt_instance.sched_pending_tokens < self.prompt_max_pending_batch_tokens * 0.2):
                 token_instance = prompt_instance
             if (len(self.token_instances)==1 and
-                    token_instance.sched_pending_tokens*self.load_balance_fac<prompt_instance.sched_pending_tokens):
+                    token_instance.sched_memory < token_instance.max_memory * 0.2):
                 prompt_instance = token_instance
         else:
             if prompt_instance is None:
@@ -979,7 +979,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
                 # 如果找不到合适的token实例，返回负载最低的prompt实例
                 token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
         if prompt_instance is None or token_instance is None:
-            raise ValueError("No instances available, load is too high")
+            raise ValueError("No instances available, load is too high",prompt_instance,token_instance)
 
         if prompt_instance != token_instance:
             # ship KV-cache between instances
