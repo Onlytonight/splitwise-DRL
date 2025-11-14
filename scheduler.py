@@ -769,6 +769,8 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.prompt_instances = []
         self.token_instances = []
         self.load_balance_fac = 2
+        self.adjust_interval = 5
+        self.interval = 0
 
     def is_memory_loaded(self, instance, tasks):
         """
@@ -1001,10 +1003,12 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
         print("prompt instance num is", len(self.prompt_instances), ",token instance num is", len(self.token_instances))
-        
-        self.adjust_instances_dynamically()
-        # 统计并输出实例任务类型信息
-        instance_stats = self.count_instance_types()
-        print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "
-              f"纯Prompt实例(P): {instance_stats['prompt_only_instances']}, "
-              f"纯Token实例(T): {instance_stats['token_only_instances']}")
+
+        self.interval+=1
+        if self.interval % self.adjust_interval == 0:
+            self.adjust_instances_dynamically()
+            # 统计并输出实例任务类型信息
+            instance_stats = self.count_instance_types()
+            print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "
+                  f"纯Prompt实例(P): {instance_stats['prompt_only_instances']}, "
+                  f"纯Token实例(T): {instance_stats['token_only_instances']}")
