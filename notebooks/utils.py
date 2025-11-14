@@ -297,3 +297,4 @@ def find_max_throughput(results_df):
         max_throughput = system_df[system_df["throughput"] == system_df["throughput"].max()]
         configs.append(max_throughput)
     return pd.concat(configs)
+
