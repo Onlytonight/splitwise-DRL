@@ -755,7 +755,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
                  prompt_max_pending_batch_tokens,
                  token_max_pending_batch_tokens,
                  transfer_bandwidth,
-                 adjust_interval,
                  debug=False):
         super().__init__(application,
                          router,
@@ -771,7 +770,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.token_instances = []
         self.load_balance_fac = 2
         self.adjust_interval = 1
-        print("AdaptiveMixedPoolScheduler initialized,adjust interval is", adjust_interval)
+        print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval)
 
     def is_memory_loaded(self, instance, tasks):
         """
