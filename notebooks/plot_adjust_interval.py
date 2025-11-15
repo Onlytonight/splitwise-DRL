@@ -28,7 +28,10 @@ perf_model_path = "../data/perf_model.csv"
 
 def get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=""):
     try:
-        summary_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/summary.csv")
+        if interval==0:
+            summary_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/summary.csv")
+        else:
+            summary_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/summary.csv")
     except Exception as e:
         print(e)
         print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/summary.csv")
@@ -37,7 +40,10 @@ def get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,i
 
 def get_request_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=""):
     try:
-        request_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/detailed/0.csv")
+        if interval==0:
+            request_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/detailed/0.csv")
+        else:
+            request_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/detailed/0.csv")
     except:
         print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/detailed/0.csv")
         return None
@@ -58,12 +64,8 @@ def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
             cluster = config["cluster"]
             interval = config["interval"]
 
-            if interval!=0
-                summary_df = get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
-                request_df = get_request_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
-            else:
-                summary_df = get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed, model=model)
-                request_df = get_request_data(results_dir, scheduler, start_state, cluster, trace, seed, model=model)
+            summary_df = get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
+            request_df = get_request_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
 
             if summary_df is None or request_df is None:
                 continue
