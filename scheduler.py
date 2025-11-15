@@ -770,7 +770,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.token_instances = []
         self.load_balance_fac = 2
         self.interval=0
-        self.adjust_interval = 1
+        self.adjust_interval = 5
         print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval)
 
     def is_memory_loaded(self, instance, tasks):
