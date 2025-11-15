@@ -755,6 +755,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
                  prompt_max_pending_batch_tokens,
                  token_max_pending_batch_tokens,
                  transfer_bandwidth,
+                 adjust_interval,
                  debug=False):
         super().__init__(application,
                          router,
@@ -769,8 +770,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.prompt_instances = []
         self.token_instances = []
         self.load_balance_fac = 2
-        self.adjust_interval = 5
-        self.interval = 0
+        self.adjust_interval = adjust_interval
 
     def is_memory_loaded(self, instance, tasks):
         """
@@ -873,6 +873,41 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             else:
                 if len(self.token_instances) > 1:
                     self.transfer_best_token_to_prompt()
+
+    # 新增基于负载率的动态实例调整函数
+    def adjust_instances_by_load_ratio(self):
+        """
+        Dynamically adjust instances based on load ratio of pending tokens to max batch tokens.
+        For prompt instances, load ratio = sched_pending_tokens / prompt_max_pending_batch_tokens.
+        For token instances, load ratio = sched_memory / max_memory.
+        Converts instances based on average relative load ratios.
+        """
+        if len(self.prompt_instances) == 0 or len(self.token_instances) == 0:
+            return
+            
+        # Calculate load ratios for prompt instances
+        prompt_load_ratios = []
+        for instance in self.prompt_instances:
+            load_ratio = instance.sched_pending_tokens / self.prompt_max_pending_batch_tokens
+            prompt_load_ratios.append(load_ratio)
+        
+        # Calculate load ratios for token instances
+        token_load_ratios = []
+        for instance in self.token_instances:
+            load_ratio = instance.sched_memory / instance.max_memory
+            token_load_ratios.append(load_ratio)
+            
+        # Calculate average load ratios
+        avg_prompt_load = sum(prompt_load_ratios) / len(prompt_load_ratios) if prompt_load_ratios else 0
+        avg_token_load = sum(token_load_ratios) / len(token_load_ratios) if token_load_ratios else 0
+        
+        # If one type is significantly more loaded than the other, convert instances
+        if avg_prompt_load-avg_token_load>0.1:
+            # Convert the least loaded token instance to prompt instance
+            self.transfer_best_token_to_prompt()
+        elif avg_token_load-avg_prompt_load>0.1:
+            # Convert the least loaded prompt instance to token instance
+            self.transfer_best_prompt_to_token()
 
     def find_best_prompt_instance(self, instances, prompt_task):
         """
@@ -1006,7 +1041,9 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
 
         self.interval+=1
         if self.interval % self.adjust_interval == 0:
-            self.adjust_instances_dynamically()
+            # self.adjust_instances_dynamically()
+            # 新增调用基于负载率的调整函数
+            self.adjust_instances_by_load_ratio()
             # 统计并输出实例任务类型信息
             instance_stats = self.count_instance_types()
             print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "

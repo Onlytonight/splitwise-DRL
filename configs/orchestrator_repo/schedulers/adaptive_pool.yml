@@ -9,3 +9,4 @@ token_processors: ["a100-80gb"]
 prompt_max_pending_batch_tokens: 8192
 token_max_pending_batch_tokens: 2048
 transfer_bandwidth: 200
+adjust_interval: 5
