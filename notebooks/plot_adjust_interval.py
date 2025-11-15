@@ -12,6 +12,7 @@ import seaborn as sns
 import scipy.stats as stats
 from plotly.subplots import make_subplots
 import sys
+
 sys.path.append('../notebooks')
 
 from perf_model import PerfModel
@@ -30,7 +31,7 @@ def get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,i
         summary_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/summary.csv")
     except Exception as e:
         print(e)
-        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/summary.csv")
+        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/summary.csv")
         return None
     return summary_df
 
@@ -38,29 +39,25 @@ def get_request_data(results_dir, scheduler, start_state, cluster, trace, seed,i
     try:
         request_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/detailed/0.csv")
     except:
-        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/detailed/0.csv")
+        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/detailed/0.csv")
         return None
     return request_df
 
-def get_data(intervals, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
+
+def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
     """
     Load and process data from results directory based on configurations and traces.
     """
     results = []
     request_dfs = {}
-    config = {
-        "name": "mixed_pool",
-        "scheduler": "mixed_pool",
-        "start_state": "splitwise_25_15",
-        "cluster": "0_40"
-    }
-    name = config["name"]
-    scheduler = config["scheduler"]
-    start_state = config["start_state"]
-    cluster = config["cluster"]
-
     for trace in traces:
-        for interval in intervals:
+        for config in configs:
+            name = config["name"]
+            scheduler = config["scheduler"]
+            start_state = config["start_state"]
+            cluster = config["cluster"]
+            interval = config["interval"]
+
             summary_df = get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
             request_df = get_request_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
             if summary_df is None or request_df is None:
@@ -70,9 +67,10 @@ def get_data(intervals, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
             normalize_model = model
             normalize_hardware = "a100-80gb"
             normalize_tp = 8
-            
+
             perf_model.add_baseline_perf(request_df, normalize_model, normalize_hardware, normalize_tp)
-            request_df["baseline_e2e"] = request_df["baseline_ttft"] + request_df["baseline_tbt"] * (request_df["token_sizes"] - 1)
+            request_df["baseline_e2e"] = request_df["baseline_ttft"] + request_df["baseline_tbt"] * (
+                        request_df["token_sizes"] - 1)
             request_df["ttft_slowdown"] = request_df["ttft_times"] / request_df["baseline_ttft"]
             request_df["tbt_slowdown"] = request_df["tbt_times"] / request_df["baseline_tbt"]
             request_df["e2e_slowdown"] = request_df["response_times"] / request_df["baseline_e2e"]
@@ -104,6 +102,7 @@ def get_data(intervals, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
     results_df = pd.DataFrame(results)
     return results_df, request_dfs
 
+
 def get_slo(y_var, quantile):
     """
     Get SLO values for different metrics and quantiles.
@@ -125,30 +124,32 @@ def get_slo(y_var, quantile):
     else:
         raise Exception(f"Invalid y_var:quantile {y_var}:{quantile}")
 
+
 def get_y_limits(y_var, quantile):
     """
     Get Y-axis limits for plots.
     """
     return {
-            'bottom': 0,
-            'top': 8
-        }
-    raise Exception(f"Invalid y_var:quantile {y_var}:{quantile}")   
+        'bottom': 0,
+        'top': 8
+    }
+    raise Exception(f"Invalid y_var:quantile {y_var}:{quantile}")
+
 
 def plot_y_vs_trace_new(results_df,
-                       traces,
-                       y_vars=["ttft_times", "tbt_times", "e2e_times"],
-                       y_vars_labels=["TTFT", "TBT", "E2E"],
-                       quantiles=[0.5, 0.9, 0.99],
-                       title=None):
+                        traces,
+                        y_vars=["ttft_times", "tbt_times", "e2e_times"],
+                        y_vars_labels=["TTFT", "TBT", "E2E"],
+                        quantiles=[0.5, 0.9, 0.99],
+                        title=None):
     """
     Create plots showing performance metrics vs trace/load.
     """
     fig, axs = plt.subplots(nrows=len(y_vars),
-                           ncols=len(quantiles),
-                           figsize=(len(quantiles) * 2.5, len(y_vars) * 1.5),
-                           sharex=True,
-                           constrained_layout=True)
+                            ncols=len(quantiles),
+                            figsize=(len(quantiles) * 2.5, len(y_vars) * 1.5),
+                            sharex=True,
+                            constrained_layout=True)
 
     # Plot
     for y_var in y_vars:
@@ -176,7 +177,7 @@ def plot_y_vs_trace_new(results_df,
     for y_var in y_vars:
         for quantile in quantiles:
             axs[y_vars.index(y_var)][quantiles.index(quantile)].set_ylabel(
-                f"Normalized\np{int(quantile*100)} {y_vars_labels[y_vars.index(y_var)]}")
+                f"Normalized\np{int(quantile * 100)} {y_vars_labels[y_vars.index(y_var)]}")
             y_limits = get_y_limits(y_var, quantile)
             axs[y_vars.index(y_var)][quantiles.index(quantile)].set_ylim(**y_limits)
             slo = get_slo(y_var, quantile)
@@ -195,15 +196,25 @@ def main():
     """
     Main function to generate plots for adaptive_mixed_pool and mixed_pool configurations.
     """
-    
-    configs = [1,5,10]
-    
+    # Define configurations for adaptive_mixed_pool and mixed_pool
+    interval = [1,5,10]
+    configs = []
+    for i in interval:
+        adaptive_mixed_pool_config = {
+            "name": i,
+            "scheduler": "adaptive_pool",
+            "start_state": "splitwise_25_15",
+            "cluster": "0_40",
+            "interval": i
+        }
+        configs.append(adaptive_mixed_pool_config)
+
     # Define traces for different loads (rr_code_x where x varies)
-    traces = [f"rr_code_{i}" for i in range(30, 160, 10)]  # Example range
-    
+    traces = [f"rr_conv_{i}" for i in range(30, 160, 10)]  # Example range
+
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")
-    
+
     # Generate plots
     plot_y_vs_trace_new(
         results_df,
@@ -212,11 +223,12 @@ def main():
         y_vars_labels=["TTFT", "TBT", "E2E"],  # 添加这行以确保标签正确
         title="Performance Comparison: adaptive_mixed_pool vs mixed_pool"
     )
-    
+
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
-    plt.savefig(f"{plots_dir}/adaptive_interval.png", bbox_inches='tight')
+    plt.savefig(f"{plots_dir}/adaptive_mixed_pool_vs_mixed_pool_comparison-code.png", bbox_inches='tight')
     plt.show()
+
 
 if __name__ == "__main__":
     main()
