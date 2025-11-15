@@ -226,7 +226,7 @@ def main():
     }
     mixed_pool_config = {
         "name": " mixed_pool",
-        "scheduler": " mixed_pool",
+        "scheduler": "mixed_pool",
         "start_state": "splitwise_25_15",
         "cluster": "0_40",
         "interval": 0
