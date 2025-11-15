@@ -31,7 +31,7 @@ def get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,i
         summary_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/summary.csv")
     except Exception as e:
         print(e)
-        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/summary.csv")
+        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/summary.csv")
         return None
     return summary_df
 
@@ -39,7 +39,7 @@ def get_request_data(results_dir, scheduler, start_state, cluster, trace, seed,i
     try:
         request_df = pd.read_csv(f"{results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/detailed/0.csv")
     except:
-        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/detailed/0.csv")
+        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/{interval}/detailed/0.csv")
         return None
     return request_df
 
@@ -58,8 +58,13 @@ def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
             cluster = config["cluster"]
             interval = config["interval"]
 
-            summary_df = get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
-            request_df = get_request_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
+            if interval!=0
+                summary_df = get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
+                request_df = get_request_data(results_dir, scheduler, start_state, cluster, trace, seed,interval, model=model)
+            else:
+                summary_df = get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed, model=model)
+                request_df = get_request_data(results_dir, scheduler, start_state, cluster, trace, seed, model=model)
+
             if summary_df is None or request_df is None:
                 continue
 
@@ -191,12 +196,7 @@ def plot_y_vs_trace_new(results_df,
     # Set 300dpi
     plt.gcf().set_dpi(300)
 
-
-def main():
-    """
-    Main function to generate plots for adaptive_mixed_pool and mixed_pool configurations.
-    """
-    # Define configurations for adaptive_mixed_pool and mixed_pool
+def interval_all():
     interval = [1,5,10]
     configs = []
     for i in interval:
@@ -208,6 +208,29 @@ def main():
             "interval": i
         }
         configs.append(adaptive_mixed_pool_config)
+    return configs
+
+def main():
+    """
+    Main function to generate plots for adaptive_mixed_pool and mixed_pool configurations.
+    """
+    # Define configurations for adaptive_mixed_pool and mixed_pool
+    adaptive_mixed_pool_config = {
+        "name": "adaptive_pool",
+        "scheduler": "adaptive_pool",
+        "start_state": "splitwise_25_15",
+        "cluster": "0_40",
+        "interval": 1
+    }
+    mixed_pool_config = {
+        "name": " mixed_pool",
+        "scheduler": " mixed_pool",
+        "start_state": "splitwise_25_15",
+        "cluster": "0_40",
+        "interval": 0
+    }
+    configs = [adaptive_mixed_pool_config,mixed_pool_config]
+
 
     # Define traces for different loads (rr_code_x where x varies)
     traces = [f"rr_conv_{i}" for i in range(30, 160, 10)]  # Example range
@@ -226,7 +249,7 @@ def main():
 
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
-    plt.savefig(f"{plots_dir}/adaptive_mixed_pool_vs_mixed_pool_comparison-code.png", bbox_inches='tight')
+    plt.savefig(f"{plots_dir}/adjust interval.png", bbox_inches='tight')
     plt.show()
 
 
