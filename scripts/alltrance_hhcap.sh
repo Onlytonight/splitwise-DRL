@@ -15,7 +15,7 @@ python run.py --multirun\
     start_state.token.num_instances=15 \
     performance_model=db \
     trace.filename=$TRACE_conv \
-    adjust_interval= $INTERVAL \
+    adjust_interval=$INTERVAL \
     seed=0
 
 # python run.py --multirun\
