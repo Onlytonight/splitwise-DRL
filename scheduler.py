@@ -763,15 +763,17 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
                          prompt_processors,
                          token_processors,
                          debug)
-        self.prompt_max_pending_batch_tokens = prompt_max_pending_batch_tokens
+        # self.prompt_max_pending_batch_tokens = prompt_max_pending_batch_tokens
+        self.prompt_max_pending_batch_tokens = 8192
         self.token_max_pending_batch_tokens = token_max_pending_batch_tokens
         self.transfer_bandwidth = transfer_bandwidth * 1024**3 # convert to B/s
         self.prompt_instances = []
         self.token_instances = []
         self.load_balance_fac = 2
         self.interval=0
-        self.adjust_interval = 10
-        print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval)
+        self.adjust_interval = 1
+        print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval,
+              "prompt max pending batch tokens is", self.prompt_max_pending_batch_tokens)
 
     def is_memory_loaded(self, instance, tasks):
         """
