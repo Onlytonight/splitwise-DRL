@@ -6,6 +6,7 @@ SEED=0
 
 python run.py --multirun\
     applications.0.scheduler=adaptive_pool \
+    applications.0.scheduler.prompt_max_pending_batch_tokens=1024 \
     cluster=half_half \
     cluster.servers.0.count=0 \
     cluster.servers.1.count=40 \
