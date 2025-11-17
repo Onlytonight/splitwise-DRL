@@ -764,7 +764,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
                          token_processors,
                          debug)
         # self.prompt_max_pending_batch_tokens = prompt_max_pending_batch_tokens
-        self.prompt_max_pending_batch_tokens = 8192
+        self.prompt_max_pending_batch_tokens = 4096
         self.token_max_pending_batch_tokens = token_max_pending_batch_tokens
         self.transfer_bandwidth = transfer_bandwidth * 1024**3 # convert to B/s
         self.prompt_instances = []
