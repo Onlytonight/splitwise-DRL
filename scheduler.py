@@ -1030,14 +1030,30 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         prompt_instance = self.find_best_prompt_instance(self.prompt_instances, prompt_task)
         token_instance = self.find_best_token_instance(self.token_instances, prompt_task, token_task)
 
-        if prompt_instance is not None and token_instance is not None:
-            # 极端情况，最后一个token实例仍然空闲则允许一个混合实例
-            if (len(self.prompt_instances)==1 and
-                    prompt_instance.sched_pending_tokens < self.prompt_max_pending_batch_tokens * 0.2):
+        self.interval+=1
+        if self.interval % self.adjust_interval == 0:
+            # self.adjust_instances_dynamically()
+            # self.adjust_instances_by_load_ratio()
+            res = self.adjust_instances_by_ttft_tbt_ratio()
+            if res=='TTFT':
                 token_instance = prompt_instance
-            if (len(self.token_instances)==1 and
-                    token_instance.sched_memory < token_instance.max_memory * 0.2):
+            elif res=='TBT':
                 prompt_instance = token_instance
+
+            # 统计并输出实例任务类型信息
+            instance_stats = self.count_instance_types()
+            print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "
+                  f"纯Prompt实例(P): {instance_stats['prompt_only_instances']}, "
+                  f"纯Token实例(T): {instance_stats['token_only_instances']}")
+
+        # if prompt_instance is not None and token_instance is not None:
+        #     # 极端情况，最后一个token实例仍然空闲则允许一个混合实例
+        #     if (len(self.prompt_instances)==1 and
+        #             prompt_instance.sched_pending_tokens < self.prompt_max_pending_batch_tokens * 0.2):
+        #         token_instance = prompt_instance
+        #     if (len(self.token_instances)==1 and
+        #             token_instance.sched_memory < token_instance.max_memory * 0.2):
+        #         prompt_instance = token_instance
         # else:
         #     if prompt_instance is None:
         #         # 如果找不到合适的prompt实例，返回负载最低的token实例
@@ -1045,6 +1061,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         #     if token_instance is None:
         #         # 如果找不到合适的token实例，返回负载最低的prompt实例
         #         token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
+
         if prompt_instance is None or token_instance is None:
             raise ValueError("No instances available, load is too high",prompt_instance,token_instance)
 
@@ -1069,17 +1086,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
 
-        self.interval+=1
-        if self.interval % self.adjust_interval == 0:
-            # self.adjust_instances_dynamically()
-            # self.adjust_instances_by_load_ratio()
-            self.adjust_instances_by_ttft_tbt_ratio()
-
-            # 统计并输出实例任务类型信息
-            instance_stats = self.count_instance_types()
-            print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "
-                  f"纯Prompt实例(P): {instance_stats['prompt_only_instances']}, "
-                  f"纯Token实例(T): {instance_stats['token_only_instances']}")
 
     def adjust_instances_by_ttft_tbt_ratio(self):
         """
@@ -1103,19 +1109,24 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             tbt_to_ttft_ratio = p50_normalized_tbt / p50_normalized_ttft
 
             # 如果TTFT显著高于TBT，增加prompt实例
-            if ttft_to_tbt_ratio > adjust_threshold and len(self.token_instances) > 1:
-                print(
-                    f"TTFT ({p50_normalized_ttft:.2f}) 比 TBT ({p50_normalized_tbt:.2f}) 高 {ttft_to_tbt_ratio:.2f}倍，转换token实例到prompt")
-                self.transfer_best_token_to_prompt()
+            if ttft_to_tbt_ratio > adjust_threshold:
+                if len(self.token_instances) > 1:
+                    print(
+                        f"TTFT ({p50_normalized_ttft:.2f}) 比 TBT ({p50_normalized_tbt:.2f}) 高 {ttft_to_tbt_ratio:.2f}倍，转换token实例到prompt")
+                    self.transfer_best_token_to_prompt()
+                    return None
+                return 'TTFT'
             # 如果TBT显著高于TTFT，增加token实例
-            elif tbt_to_ttft_ratio > adjust_threshold and len(self.prompt_instances) > 1:
-                print(
-                    f"TBT ({p50_normalized_tbt:.2f}) 比 TTFT ({p50_normalized_ttft:.2f}) 高 {tbt_to_ttft_ratio:.2f}倍，转换prompt实例到token")
-                self.transfer_best_prompt_to_token()
+            if tbt_to_ttft_ratio > adjust_threshold:
+                if len(self.prompt_instances) > 1:
+                    print(
+                        f"TBT ({p50_normalized_tbt:.2f}) 比 TTFT ({p50_normalized_ttft:.2f}) 高 {tbt_to_ttft_ratio:.2f}倍，转换prompt实例到token")
+                    self.transfer_best_prompt_to_token()
+                    return None
+                return 'TBT'
             # 否则不进行转换
-            else:
-                print(f"TTFT ({p50_normalized_ttft:.2f}) 和 TBT ({p50_normalized_tbt:.2f}) 平衡，无需转换实例")
-
+            print(f"TTFT ({p50_normalized_ttft:.2f}) 和 TBT ({p50_normalized_tbt:.2f}) 平衡，无需转换实例")
+            return None
 
     def get_period_result(self):
         new_completed_count = len(self.completed_queue)
@@ -1162,9 +1173,9 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
                 p99_normalized_tbt = normalized_df['normalized_tbt'].quantile(0.99)
 
                 # 打印统计信息
-                print(f"Between schedules: {len(ttfts)} requests completed")
-                print(f"Normalized TTFT - P50: {p50_normalized_ttft:.2f}, P99: {p99_normalized_ttft:.2f}")
-                print(f"Normalized TBT - P50: {p50_normalized_tbt:.2f}, P99: {p99_normalized_tbt:.2f}")
+                # print(f"Between schedules: {len(ttfts)} requests completed")
+                # print(f"Normalized TTFT - P50: {p50_normalized_ttft:.2f}, P99: {p99_normalized_ttft:.2f}")
+                # print(f"Normalized TBT - P50: {p50_normalized_tbt:.2f}, P99: {p99_normalized_tbt:.2f}")
 
                 # 返回归一化后的p50和p99分位数
                 self.last_completed_count = new_completed_count
