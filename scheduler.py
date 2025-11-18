@@ -777,11 +777,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.interval_ttft_stats = []  # 存储两次schedule调用间的TTFT统计
         from notebooks.perf_model import PerfModel
 
-        import os
-        current_path = os.getcwd()
-        print(f"Current path: {current_path}")
-        relative_path = os.path.relpath("data/perf_model.csv", current_path)
-        self.perf_model = PerfModel(relative_path, init=True)
+        self.perf_model = PerfModel("/home/xfusion/conda/splitwise-DRL/data/perf_model.csv", init=True)
 
 
     def is_memory_loaded(self, instance, tasks):
