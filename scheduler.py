@@ -775,11 +775,8 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
               "prompt max pending batch tokens is", self.prompt_max_pending_batch_tokens)
         self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
         self.interval_ttft_stats = []  # 存储两次schedule调用间的TTFT统计
-
-    def get_perf_model(self):
         from notebooks.perf_model import PerfModel
-        perf_model = PerfModel("../data/perf_model.csv", init=True)
-        return perf_model
+        self.perf_model = PerfModel("../data/perf_model.csv", init=True)
 
 
     def is_memory_loaded(self, instance, tasks):
@@ -1070,7 +1067,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         # bookkeeping
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
-        print("prompt instance num is", len(self.prompt_instances), ",token instance num is", len(self.token_instances))
 
         self.interval+=1
         if self.interval % self.adjust_interval == 0:
