@@ -776,7 +776,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
         self.interval_ttft_stats = []  # 存储两次schedule调用间的TTFT统计
         from notebooks.perf_model import PerfModel
-        self.perf_model = PerfModel("../data/perf_model.csv", init=True)
+        self.perf_model = PerfModel("data/perf_model.csv", init=True)
 
 
     def is_memory_loaded(self, instance, tasks):
