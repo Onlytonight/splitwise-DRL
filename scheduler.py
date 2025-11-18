@@ -1075,13 +1075,50 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.interval+=1
         if self.interval % self.adjust_interval == 0:
             # self.adjust_instances_dynamically()
-            # 新增调用基于负载率的调整函数
-            self.adjust_instances_by_load_ratio()
+            # self.adjust_instances_by_load_ratio()
+            self.adjust_instances_by_ttft_tbt_ratio()
+
             # 统计并输出实例任务类型信息
             instance_stats = self.count_instance_types()
             print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "
                   f"纯Prompt实例(P): {instance_stats['prompt_only_instances']}, "
                   f"纯Token实例(T): {instance_stats['token_only_instances']}")
+
+    def adjust_instances_by_ttft_tbt_ratio(self):
+        """
+        根据p50归一化后的TTFT和TBT值的倍数关系，决定是否进行实例类型转换
+
+        参数:
+            p50_normalized_ttft: 归一化后的TTFT p50分位数
+            p50_normalized_tbt: 归一化后的TBT p50分位数
+
+        逻辑:
+            - 如果TTFT比TBT显著高(倍数超过阈值)，则增加prompt实例(转换token实例)
+            - 如果TBT比TTFT显著高(倍数超过阈值)，则增加token实例(转换prompt实例)
+        """
+        # 设置调整阈值，可根据实际情况调整
+        adjust_threshold = 1.5  # 当一个指标是另一个的1.5倍以上时进行调整
+        p50_normalized_ttft,_, p50_normalized_tbt,_ = self.get_period_result()
+        # 确保两个指标都有效(不为0)
+        if p50_normalized_ttft > 0 and p50_normalized_tbt > 0:
+            # 计算TTFT与TBT的比值
+            ttft_to_tbt_ratio = p50_normalized_ttft / p50_normalized_tbt
+            tbt_to_ttft_ratio = p50_normalized_tbt / p50_normalized_ttft
+
+            # 如果TTFT显著高于TBT，增加prompt实例
+            if ttft_to_tbt_ratio > adjust_threshold and len(self.token_instances) > 1:
+                print(
+                    f"TTFT ({p50_normalized_ttft:.2f}) 比 TBT ({p50_normalized_tbt:.2f}) 高 {ttft_to_tbt_ratio:.2f}倍，转换token实例到prompt")
+                self.transfer_best_token_to_prompt()
+            # 如果TBT显著高于TTFT，增加token实例
+            elif tbt_to_ttft_ratio > adjust_threshold and len(self.prompt_instances) > 1:
+                print(
+                    f"TBT ({p50_normalized_tbt:.2f}) 比 TTFT ({p50_normalized_ttft:.2f}) 高 {tbt_to_ttft_ratio:.2f}倍，转换prompt实例到token")
+                self.transfer_best_prompt_to_token()
+            # 否则不进行转换
+            else:
+                print(f"TTFT ({p50_normalized_ttft:.2f}) 和 TBT ({p50_normalized_tbt:.2f}) 平衡，无需转换实例")
+
 
     def get_period_result(self):
         new_completed_count = len(self.completed_queue)
