@@ -88,7 +88,7 @@ class DatabasePerformanceModel(PerformanceModel):
         self.db["token_time"] = self.db["token_time"] / 1000
 
         self.init_predictor()
-
+    
     def init_predictor(self):
         """
         Predict using number of tokens in the batch.
@@ -97,6 +97,8 @@ class DatabasePerformanceModel(PerformanceModel):
         self.token_time_predictors = {}
         self.prompt_time_cache = {}
         self.token_time_cache = {}
+        # 添加SLO计算结果缓存
+        self.slo_cache = {}
 
         for model in self.db["model"].unique():
             for hardware in self.db["hardware"].unique():
@@ -268,3 +270,87 @@ def get_iteration_duration(*args, **kwargs):
     Returns the execution time of a contiguous iteration.
     """
     return performance_model.get_iteration_duration(*args, **kwargs)
+
+
+def get_p50_slo_latency(self, model, hardware, tensor_parallel, 
+                           prompt_size=1024, token_size=1024, 
+                           metric_type="e2e"):
+        """
+        计算特定配置下p50的SLO阈值时延，并使用缓存避免重复计算
+        
+        参数:
+            model: 模型名称
+            hardware: 硬件名称
+            tensor_parallel: 张量并行度
+            prompt_size: 提示词大小
+            token_size: 生成的token大小
+            metric_type: 指标类型，可选值: "e2e", "ttft", "tbt"
+        
+        返回:
+            SLO阈值时延（秒）
+        """
+        # slots_e2e = perf_model.get_p50_slo_latency("bloom-176b", "h100-80gb", 4, prompt_size=1024, token_size=1024,
+        #                                            metric_type="e2e")
+
+        # 构建缓存键
+        cache_key = (model, hardware, tensor_parallel, prompt_size, token_size, metric_type)
+        
+        # 检查缓存中是否已有结果
+        if cache_key in self.slo_cache:
+            return self.slo_cache[cache_key]
+        
+        # p50慢下来因子
+        p50_slo_factors = {
+            "ttft": 2.0,  # TTFT的p50慢下来因子
+            "tbt": 1.25,  # 每token时间的p50慢下来因子
+            "e2e": 1.25   # 端到端时间的p50慢下来因子
+        }
+        
+        if metric_type not in p50_slo_factors:
+            raise ValueError(f"不支持的指标类型: {metric_type}。支持的类型: {list(p50_slo_factors.keys())}")
+        
+        # 获取p50 SLO因子
+        p50_slo_factor = p50_slo_factors[metric_type]
+        
+        # 计算基准性能
+        try:
+            # 获取基准提示词时间
+            baseline_prompt_time = self.get_prompt_time(
+                model=model,
+                hardware=hardware,
+                tensor_parallel=tensor_parallel,
+                prompt_size=prompt_size,
+                batch_size=1,  # 基准配置使用batch_size=1
+                token_size=token_size
+            )
+            
+            # 获取基准token时间
+            baseline_token_time = self.get_token_time(
+                model=model,
+                hardware=hardware,
+                tensor_parallel=tensor_parallel,
+                prompt_size=prompt_size,
+                batch_size=1,  # 基准配置使用batch_size=1
+                token_size=token_size
+            )
+            
+            # 根据指标类型计算SLO阈值
+            if metric_type == "ttft":
+                # TTFT: Time To First Token
+                result = baseline_prompt_time * p50_slo_factor
+            elif metric_type == "tbt":
+                # TBT: Time per Token
+                result = baseline_token_time * p50_slo_factor
+            elif metric_type == "e2e":
+                # 端到端延迟 = 提示词处理时间 + 生成token的时间
+                result = (baseline_prompt_time + baseline_token_time * (token_size - 1)) * p50_slo_factor
+            
+            # 存储到缓存
+            self.slo_cache[cache_key] = result
+            
+            return result
+            
+        except Exception as e:
+            print(f"计算SLO阈值时出错: {e}")
+            # 如果计算失败，返回一个默认的高值
+            return float('inf')

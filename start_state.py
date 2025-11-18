@@ -59,7 +59,7 @@ def splitwise(start_state_cfg, cluster, applications, **kwargs):
 
     prompt_cfg = start_state_cfg.prompt
     token_cfg = start_state_cfg.token
-    print("prompt instance is",prompt_cfg.num_instances,"token instance is", token_cfg.num_instances)
+    # print("prompt instance is",prompt_cfg.num_instances,"token instance is", token_cfg.num_instances)
     prompt_parallelism = ModelParallelism(pipeline_parallelism=prompt_cfg.pipeline_parallelism,
                                           tensor_parallelism=prompt_cfg.tensor_parallelism)
     token_parallelism = ModelParallelism(pipeline_parallelism=token_cfg.pipeline_parallelism,

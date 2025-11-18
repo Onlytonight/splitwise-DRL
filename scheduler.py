@@ -763,8 +763,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
                          prompt_processors,
                          token_processors,
                          debug)
-        # self.prompt_max_pending_batch_tokens = prompt_max_pending_batch_tokens
-        self.prompt_max_pending_batch_tokens = 4096
+        self.prompt_max_pending_batch_tokens = prompt_max_pending_batch_tokens
         self.token_max_pending_batch_tokens = token_max_pending_batch_tokens
         self.transfer_bandwidth = transfer_bandwidth * 1024**3 # convert to B/s
         self.prompt_instances = []
@@ -774,6 +773,14 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.adjust_interval = 1
         print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval,
               "prompt max pending batch tokens is", self.prompt_max_pending_batch_tokens)
+        self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
+        self.interval_ttft_stats = []  # 存储两次schedule调用间的TTFT统计
+
+    def get_perf_model(self):
+        from notebooks.perf_model import PerfModel
+        perf_model = PerfModel("../data/perf_model.csv", init=True)
+        return perf_model
+
 
     def is_memory_loaded(self, instance, tasks):
         """
@@ -840,77 +847,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             "prompt_only_instances": prompt_only_instances_count,  # Only P tasks
             "token_only_instances": token_only_instances_count     # Only T tasks
         }
-
-    def adjust_instances_dynamically(self):
-        # 计算过载的prompt实例数
-        overloaded_prompt_count = 0
-        for instance in self.prompt_instances:
-            if instance.sched_pending_tokens > self.prompt_max_pending_batch_tokens * 0.8:
-                overloaded_prompt_count += 1
-
-        # 计算过载的token实例数
-        overloaded_token_count = 0
-        for instance in self.token_instances:
-            if instance.sched_memory > instance.max_memory * 0.8:
-                overloaded_token_count += 1
-
-        # 计算过载比例
-        prompt_overload_ratio = overloaded_prompt_count / len(self.prompt_instances) if self.prompt_instances else 0
-        token_overload_ratio = overloaded_token_count / len(self.token_instances) if self.token_instances else 0
-
-        # 根据相对负载情况调整实例数
-        # 如果prompt过载严重而token负载较轻，增加prompt实例
-        if prompt_overload_ratio > 0.8 and token_overload_ratio < 0.2 and len(self.token_instances) > 1:
-            self.transfer_best_token_to_prompt()
-
-        # 如果token过载严重而prompt负载较轻，增加token实例
-        elif token_overload_ratio > 0.8 and prompt_overload_ratio < 0.2 and len(self.prompt_instances) > 1:
-            self.transfer_best_prompt_to_token()
-
-        # 如果两者都负载较轻，可以适当减少实例数
-        elif prompt_overload_ratio < 0.2 and token_overload_ratio < 0.2:
-            # 根据具体情况决定减少哪种实例
-            if len(self.prompt_instances) > len(self.token_instances):
-                if len(self.prompt_instances) > 1:
-                    self.transfer_best_prompt_to_token()
-            else:
-                if len(self.token_instances) > 1:
-                    self.transfer_best_token_to_prompt()
-
-    # 新增基于负载率的动态实例调整函数
-    def adjust_instances_by_load_ratio(self):
-        """
-        Dynamically adjust instances based on load ratio of pending tokens to max batch tokens.
-        For prompt instances, load ratio = sched_pending_tokens / prompt_max_pending_batch_tokens.
-        For token instances, load ratio = sched_memory / max_memory.
-        Converts instances based on average relative load ratios.
-        """
-        if len(self.prompt_instances) == 0 or len(self.token_instances) == 0:
-            return
-            
-        # Calculate load ratios for prompt instances
-        prompt_load_ratios = []
-        for instance in self.prompt_instances:
-            load_ratio = instance.sched_pending_tokens / self.prompt_max_pending_batch_tokens
-            prompt_load_ratios.append(load_ratio)
-        
-        # Calculate load ratios for token instances
-        token_load_ratios = []
-        for instance in self.token_instances:
-            load_ratio = instance.sched_memory / instance.max_memory
-            token_load_ratios.append(load_ratio)
-            
-        # Calculate average load ratios
-        avg_prompt_load = sum(prompt_load_ratios) / len(prompt_load_ratios) if prompt_load_ratios else 0
-        avg_token_load = sum(token_load_ratios) / len(token_load_ratios) if token_load_ratios else 0
-        
-        # If one type is significantly more loaded than the other, convert instances
-        if avg_prompt_load-avg_token_load>0.1:
-            # Convert the least loaded token instance to prompt instance
-            self.transfer_best_token_to_prompt()
-        elif avg_token_load-avg_prompt_load>0.1:
-            # Convert the least loaded prompt instance to token instance
-            self.transfer_best_prompt_to_token()
 
     def find_best_prompt_instance(self, instances, prompt_task):
         """
@@ -986,7 +922,101 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             self.transfer_best_token_to_prompt()
         elif total_token_queue > total_prompt_queue * self.load_balance_fac:
             self.transfer_best_prompt_to_token()
-            
+
+    def adjust_instances_dynamically(self):
+        # 计算过载的prompt实例数
+        overloaded_prompt_count = 0
+        for instance in self.prompt_instances:
+            if instance.sched_pending_tokens > self.prompt_max_pending_batch_tokens * 0.8:
+                overloaded_prompt_count += 1
+
+        # 计算过载的token实例数
+        overloaded_token_count = 0
+        for instance in self.token_instances:
+            if instance.sched_memory > instance.max_memory * 0.8:
+                overloaded_token_count += 1
+
+        # 计算过载比例
+        prompt_overload_ratio = overloaded_prompt_count / len(self.prompt_instances) if self.prompt_instances else 0
+        token_overload_ratio = overloaded_token_count / len(self.token_instances) if self.token_instances else 0
+
+        # 根据相对负载情况调整实例数
+        # 如果prompt过载严重而token负载较轻，增加prompt实例
+        if prompt_overload_ratio > 0.8 and token_overload_ratio < 0.2 and len(self.token_instances) > 1:
+            self.transfer_best_token_to_prompt()
+
+        # 如果token过载严重而prompt负载较轻，增加token实例
+        elif token_overload_ratio > 0.8 and prompt_overload_ratio < 0.2 and len(self.prompt_instances) > 1:
+            self.transfer_best_prompt_to_token()
+
+        # 如果两者都负载较轻，可以适当减少实例数
+        elif prompt_overload_ratio < 0.2 and token_overload_ratio < 0.2:
+            # 根据具体情况决定减少哪种实例
+            if len(self.prompt_instances) > len(self.token_instances):
+                if len(self.prompt_instances) > 1:
+                    self.transfer_best_prompt_to_token()
+            else:
+                if len(self.token_instances) > 1:
+                    self.transfer_best_token_to_prompt()
+
+        # 新增基于负载率的动态实例调整函数
+
+    def adjust_instances_by_load_ratio(self):
+        """
+        Dynamically adjust instances based on load ratio of pending tokens to max batch tokens.
+        For prompt instances, load ratio = sched_pending_tokens / prompt_max_pending_batch_tokens.
+        For token instances, load ratio = sched_memory / max_memory.
+        Converts instances based on average relative load ratios.
+        """
+        if len(self.prompt_instances) == 0 or len(self.token_instances) == 0:
+            return
+
+        # Calculate load ratios for prompt instances
+        prompt_load_ratios = []
+        for instance in self.prompt_instances:
+            load_ratio = instance.sched_pending_tokens / self.prompt_max_pending_batch_tokens
+            prompt_load_ratios.append(load_ratio)
+
+        # Calculate load ratios for token instances
+        token_load_ratios = []
+        for instance in self.token_instances:
+            load_ratio = instance.sched_memory / instance.max_memory
+            token_load_ratios.append(load_ratio)
+
+        # Calculate average load ratios
+        avg_prompt_load = sum(prompt_load_ratios) / len(prompt_load_ratios) if prompt_load_ratios else 0
+        avg_token_load = sum(token_load_ratios) / len(token_load_ratios) if token_load_ratios else 0
+
+        # If one type is significantly more loaded than the other, convert instances
+        if avg_prompt_load - avg_token_load > 0.1:
+            # Convert the least loaded token instance to prompt instance
+            self.transfer_best_token_to_prompt()
+        elif avg_token_load - avg_prompt_load > 0.1:
+            # Convert the least loaded prompt instance to token instance
+            self.transfer_best_prompt_to_token()
+
+    def get_period_result_(self):
+        new_completed_count = len(self.completed_queue)
+        if new_completed_count > self.last_completed_count:
+            # 有新完成的请求
+            newly_completed_requests = self.completed_queue[self.last_completed_count:]
+            newly_completed_ttfts = [req.metrics.TTFT for req in newly_completed_requests]
+
+            if newly_completed_ttfts:
+                # 计算统计信息
+                avg_ttft = sum(newly_completed_ttfts) / len(newly_completed_ttfts)
+                self.interval_ttft_stats.append({
+                    "timestamp": clock(),
+                    "count": len(newly_completed_ttfts),
+                    "avg_ttft": avg_ttft,
+                    "min_ttft": min(newly_completed_ttfts),
+                    "max_ttft": max(newly_completed_ttfts)
+                })
+                # 可以在这里打印或记录统计信息
+                print(f"Between schedules: {len(newly_completed_ttfts)} requests completed, avg TTFT: {avg_ttft:.2f}")
+
+            self.last_completed_count = new_completed_count
+
     def schedule(self, request, *args, **kwargs):
         """
         Assigns each to the least loaded instance (by queue length)
@@ -1052,3 +1082,61 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "
                   f"纯Prompt实例(P): {instance_stats['prompt_only_instances']}, "
                   f"纯Token实例(T): {instance_stats['token_only_instances']}")
+
+    def get_period_result(self):
+        new_completed_count = len(self.completed_queue)
+        if new_completed_count > self.last_completed_count:
+            # 有新完成的请求
+            newly_completed_requests = self.completed_queue[self.last_completed_count:]
+
+            # 准备数据用于归一化
+            request_data = []
+            ttfts = []
+            tbts = []
+
+            for req in newly_completed_requests:
+                # 获取TTFT
+                ttft = req.metrics.TTFT
+                ttfts.append(ttft)
+
+                # 计算TBT = (总响应时间 - TTFT) / token_size
+                # 假设token_size可以从请求中获取
+                token_size = getattr(req, 'token_size', 1)  # 提供默认值以防属性不存在
+                tbt = (req.metrics.router_response_time - ttft) / token_size if token_size > 0 else 0
+                tbts.append(tbt)
+
+                # 收集数据用于归一化
+                request_data.append({
+                    'prompt_sizes': getattr(req, 'prompt_size', 0),  # 假设请求有prompt_size属性
+                    'ttft': ttft,
+                    'tbt': tbt
+                })
+
+            if request_data:
+                # 创建DataFrame并使用PerfModel进行归一化
+                request_df = pd.DataFrame(request_data)
+                normalized_df = self.perf_model.add_baseline_perf(request_df)
+
+                # 计算归一化后的TTFT和TBT
+                normalized_df['normalized_ttft'] = normalized_df['ttft'] / normalized_df['baseline_ttft']
+                normalized_df['normalized_tbt'] = normalized_df['tbt'] / normalized_df['baseline_tbt']
+
+                # 计算归一化后的p50和p99分位数
+                p50_normalized_ttft = normalized_df['normalized_ttft'].quantile(0.5)
+                p99_normalized_ttft = normalized_df['normalized_ttft'].quantile(0.99)
+                p50_normalized_tbt = normalized_df['normalized_tbt'].quantile(0.5)
+                p99_normalized_tbt = normalized_df['normalized_tbt'].quantile(0.99)
+
+                # 打印统计信息
+                print(f"Between schedules: {len(ttfts)} requests completed")
+                print(f"Normalized TTFT - P50: {p50_normalized_ttft:.2f}, P99: {p99_normalized_ttft:.2f}")
+                print(f"Normalized TBT - P50: {p50_normalized_tbt:.2f}, P99: {p99_normalized_tbt:.2f}")
+
+                # 返回归一化后的p50和p99分位数
+                self.last_completed_count = new_completed_count
+                return p50_normalized_ttft, p99_normalized_ttft, p50_normalized_tbt, p99_normalized_tbt
+
+            self.last_completed_count = new_completed_count
+
+        # 如果没有新完成的请求，返回0
+        return 0, 0, 0, 0
