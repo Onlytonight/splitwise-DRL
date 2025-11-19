@@ -19,6 +19,7 @@ from trace import Trace
 
 def init_trace(cfg):
     trace_path = os.path.join(get_original_cwd(), cfg.trace.path)
+    print("trace path is", trace_path)
     trace = Trace.from_csv(trace_path)
     return trace
 

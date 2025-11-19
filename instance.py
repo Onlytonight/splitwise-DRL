@@ -332,16 +332,21 @@ class ORCAInstance(Instance):
         else:
             raise ValueError(f"Unexpected task type {task.task_type} in remove_pending_task")
 
+
     def add_to_pool(self, task):
         """
-        Add a Task to the request pool.
-        Request pool is ordered by request arrival time.
+        将任务添加到请求池中。
+        请求池根据请求到达时间进行排序。
         """
+        # 检查该任务所属的请求是否已经在等待请求列表中
         if task.request not in self.pending_requests:
+            # 如果不在等待请求列表中，使用二分插入法按照请求到达时间将请求插入到等待请求列表的正确位置
             bisect.insort(self.pending_requests, task.request,
                           key=lambda x: x.arrival_timestamp)
+            # 在请求任务映射表中为该请求创建一个新的任务列表，并添加当前任务
             self.request_tasks[task.request] = [task]
         else:
+            # 如果该请求已经在等待请求列表中，直接将任务添加到该请求对应的任务列表末尾
             self.request_tasks[task.request].append(task)
 
     def remove_from_pool(self, task):
@@ -456,24 +461,29 @@ class ORCAInstance(Instance):
 
     def start_iteration(self):
         """
-        Start a new iteration of a batch of tasks.
+        开始执行一批任务的新迭代。
         """
-        # select a new batch of tasks to run
+        # 选择要运行的新任务批次
         preempted_tasks, new_tasks = self.select_batch()
 
+        # 对于被抢占的任务，调用抢占处理方法
         for task in preempted_tasks:
             self.preempt_task(task)
 
+        # 对于新加入批次的任务，从待处理队列移除并添加到当前批次
         for task in new_tasks:
             self.remove_pending_task(task)
             self.add_to_batch(task)
 
+        # 遍历所有待处理请求，对于未被包含在当前批次中的任务，增加其抢占计数
         for request in self.pending_requests:
             task = self.request_tasks[request][0]
             if task not in self.batch:
                 task.num_preemptions += 1
 
+        # 如果当前批次为空，则检查是否有待处理请求
         if len(self.batch) == 0:
+            # 如果有待处理请求但无法执行，记录警告日志并通知调度器实例忙
             if len(self.pending_requests) > 0:
                 logging.info("%s,%s,%s,%s,%s,%s,%s,%s,%s",
                              "WARNING",
@@ -486,34 +496,47 @@ class ORCAInstance(Instance):
                              len(self.pending_requests),
                              len(self.blocked_queue))
                 self.application.scheduler.notify_busy_instance(self)
+            # 如果没有待处理请求，通知调度器实例空闲
             else:
                 self.application.scheduler.notify_free_instance(self)
             return
 
-        # estimate duration of a single iteration
+        # 计算单次迭代的持续时间
         self.iteration_duration = get_iteration_duration(batch=self.batch,
                                                          instance=self)
 
-        # find number iterations to run contiguously
+        # 确定要连续运行的迭代次数
         self.num_contiguous_iterations = self.get_num_contiguous_iterations()
+        
+        # 设置每个任务的令牌生成和处理数量
         for task in self.batch:
+            # 设置任务将要生成的令牌数（等于连续迭代次数）
             task.generating_tokens = self.num_contiguous_iterations
+            
+            # 根据任务类型设置处理的令牌数
             if isinstance(task, PromptTask):
+                # 提示任务需要处理整个提示长度
                 task.processing_tokens = task.prompt_size
             elif isinstance(task, TokenTask):
+                # 令牌任务处理的令牌数等于连续迭代次数
                 task.processing_tokens = self.num_contiguous_iterations
             else:
                 raise ValueError(f"Unexpected task type {task.task_type} in start_iteration")
 
+            # 根据任务状态执行相应的运行操作
             if task.state == NodeState.QUEUED:
+                # 队列中的任务开始运行
                 task.run()
             elif task.state == NodeState.BLOCKED:
+                # 被阻塞的任务在抢占后重新运行
                 task.run_after_preempt()
             elif task.state == NodeState.RUNNING:
+                # 已经运行的任务无需额外操作
                 pass
             else:
                 raise ValueError(f"Unexpected task state {task.state} in start_iteration")
 
+        # 安排迭代完成事件，在指定时间后调用complete_iteration方法
         self.completion_events["iteration"] = schedule_event(
                         self.iteration_duration * self.num_contiguous_iterations,
                         lambda instance=self: instance.complete_iteration())
@@ -677,33 +700,40 @@ class SplitwiseInstance(ORCAInstance):
             raise ValueError(f"Unexpected task type {task.task_type} in remove_pending_task")
 
     def task_arrival(self, task):
+        """
+        处理任务到达实例的情况
+        """
+        # 将任务分配给当前实例并标记任务已到达
         task.instance = self
         task.arrive()
 
-        # add task to request pool and pending queue
+        # 将任务添加到请求池和待处理队列中
         self.add_to_pool(task)
         self.add_pending_task(task)
 
-        # if no tasks currently executing, start a new iteration
+        # 如果当前没有任务在执行，则启动新的迭代
         if len(self.batch) == 0:
-            # if instance is blocked due to memory constraints, do nothing
+            # 如果由于内存限制实例被阻塞，则不执行任何操作
             if self.memory + task.memory > self.max_memory:
                 return
             self.start_iteration()
             return
 
-        # otherwise, add to executing batch on the next iteration
+        # 如果当前批次未满且新增任务不会超过批处理令牌限制，则暂停当前迭代以便在下一个迭代中添加任务
         if len(self.batch) < self.max_batch_size and \
             self.batch_tokens + task.tokens_per_iteration <= self.max_batch_tokens:
             self.pause_iteration()
             return
 
-        # otherwise, check whether to preempt
+        # 否则检查是否需要抢占
         if isinstance(task, PromptTask):
+            # 计算当前批次中提示任务占用的令牌数
             batch_prompt_tokens = self.batch_tokens - len(self.token_tasks_in_batch)
+            # 如果当前批次中提示任务数量小于总任务数且添加新提示任务不会超过批处理令牌限制，则进行抢占
             if len(self.prompt_tasks_in_batch) < len(self.batch) and \
                 batch_prompt_tokens + task.prompt_size <= self.max_batch_tokens:
                 self.preempt_iteration()
+                return
                 return
 
     def preempt_iteration(self):
@@ -740,29 +770,36 @@ class SplitwiseInstance(ORCAInstance):
                     break
                 if task.request in batch_requests:
                     continue
+                # 如果任务处于阻塞状态，可以直接加入批次
                 if task.state == NodeState.BLOCKED:
                     new_batch.append(task)
                     batch_requests.add(task.request)
                     batch_tokens += task.tokens_per_iteration
                     continue
+                # 检查内存限制
                 if task.memory + memory <= self.max_memory:
                     new_batch.append(task)
                     batch_requests.add(task.request)
                     memory += task.memory
                     batch_tokens += task.tokens_per_iteration
             else:
+                # 因为队列按抢占次数和到达时间排序，一旦遇到未达抢占上限的任务就停止
                 break
 
-        # add prompt tasks to the batch
-        # assumes we don't have prompt tasks in old_batch since they completed
+        # 添加提示任务到批次中
+        # 假设旧批次中没有提示任务因为它们已完成
         for task in self.pending_prompt_queue:
+            # 检查批次大小限制
             if len(new_batch) == self.max_batch_size:
                 break
+            # 检查批处理令牌限制
             if len(new_batch) > 0 and \
                 batch_tokens + task.tokens_per_iteration > self.max_batch_tokens:
                 break
+            # 避免同一请求的多个任务进入同一批次
             if task.request in batch_requests:
                 continue
+            # 检查内存限制
             if task.memory + memory <= self.max_memory:
                 new_batch.append(task)
                 batch_requests.add(task.request)
@@ -771,49 +808,64 @@ class SplitwiseInstance(ORCAInstance):
             else:
                 break
 
-        # then add blocked token tasks to the batch
+        # 添加阻塞的令牌任务到批次中
         for task in self.blocked_queue:
+            # 检查批次大小限制
             if len(new_batch) == self.max_batch_size:
                 break
+            # 检查批处理令牌限制
             if len(new_batch) > 0 and \
                 batch_tokens + task.tokens_per_iteration > self.max_batch_tokens:
                 break
+            # 避免同一请求的多个任务进入同一批次
             if task.request in batch_requests:
                 continue
+            # 确保任务确实处于阻塞状态
             if task.state != NodeState.BLOCKED:
                 raise ValueError("Task in blocked queue is not blocked")
+            # 添加任务到新批次
             new_batch.append(task)
             batch_requests.add(task.request)
             batch_tokens += task.tokens_per_iteration
 
-        # then add old_batch token tasks to the batch
+        # 添加旧批次中的任务到新批次中（继续执行）
         for task in old_batch:
+            # 检查批次大小限制
             if len(new_batch) == self.max_batch_size:
                 break
+            # 检查批处理令牌限制
             if len(new_batch) > 0 and \
                 batch_tokens + task.tokens_per_iteration > self.max_batch_tokens:
                 break
+            # 避免同一请求的多个任务进入同一批次
             if task.request in batch_requests:
                 continue
+            # 添加任务到新批次
             new_batch.append(task)
             batch_requests.add(task.request)
             batch_tokens += task.tokens_per_iteration
 
-        # then add any other token tasks to the batch
+        # 最后添加其他令牌任务到批次中
         for request in self.pending_requests:
+            # 检查批次大小限制
             if len(new_batch) == self.max_batch_size:
                 break
+            # 获取该请求的第一个待处理任务
             task = self.request_tasks[request][0]
+            # 避免同一请求的多个任务进入同一批次
             if task.request in batch_requests:
                 continue
+            # 检查批处理令牌限制
             if len(new_batch) > 0 and \
                 batch_tokens + task.tokens_per_iteration > self.max_batch_tokens:
                 break
+            # 如果任务处于阻塞状态，可以直接加入批次
             if task.state == NodeState.BLOCKED:
                 new_batch.append(task)
                 batch_requests.add(task.request)
                 batch_tokens += task.tokens_per_iteration
                 continue
+            # 检查内存限制
             if task.memory + memory <= self.max_memory:
                 new_batch.append(task)
                 batch_requests.add(task.request)
@@ -821,8 +873,13 @@ class SplitwiseInstance(ORCAInstance):
                 batch_tokens += task.tokens_per_iteration
             else:
                 break
+        
+        # 更新实例的批处理令牌计数
         self.batch_tokens = batch_tokens
 
+        # 计算被抢占和新添加的任务
         preempted_tasks = [task for task in old_batch if task not in new_batch]
         new_tasks = [task for task in new_batch if task not in old_batch]
+        
+        # 返回被抢占的任务列表和新添加的任务列表
         return preempted_tasks, new_tasks

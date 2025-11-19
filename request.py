@@ -18,13 +18,13 @@ class RequestState(IntEnum):
     """
     RequestState describes the states of a Request.
     """
-    NONE = 0
-    QUEUED_AT_ROUTER = 1
-    QUEUED_AT_SCHEDULER = 2
-    RUNNING_ON_EXECUTOR = 3
-    COMPLETED_AT_SCHEDULER = 4
-    COMPLETED_AT_ROUTER = 5
-    ABORTED = 6
+    NONE = 0                    # Initial state when request is created
+    QUEUED_AT_ROUTER = 1        # Request is waiting in router queue
+    QUEUED_AT_SCHEDULER = 2     # Request is waiting in scheduler queue
+    RUNNING_ON_EXECUTOR = 3     # Request is being processed by an executor
+    COMPLETED_AT_SCHEDULER = 4  # Request has finished execution and is at scheduler
+    COMPLETED_AT_ROUTER = 5     # Request has been delivered back to router
+    ABORTED = 6                 # Request was aborted during processing
 
 
 class RequestType(IntEnum):

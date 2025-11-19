@@ -776,8 +776,8 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
         self.interval_ttft_stats = []  # 存储两次schedule调用间的TTFT统计
         from notebooks.perf_model import PerfModel
-
-        self.perf_model = PerfModel("/home/xfusion/conda/splitwise-DRL/data/perf_model.csv", init=True)
+        # self.perf_model = PerfModel("D:\homework\网络\论文\LLMshedule\pd分离\splitwise-DRL\data\perf_model.csv", init=True)
+        self.perf_model = PerfModel("D:\homework\网络\论文\LLMshedule\pd分离\splitwise-DRL\data\perf_model.csv", init=True)
 
 
     def is_memory_loaded(self, instance, tasks):
@@ -854,8 +854,8 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             raise ValueError("No prompt instances")
         prompt_instance = min(instances,
                               key=lambda instance: instance.sched_pending_tokens)
-        # if self.is_queue_long(prompt_instance, prompt_task):
-        #     return None
+        if self.is_queue_long(prompt_instance, prompt_task):
+            return None
         return prompt_instance
 
     def find_best_token_instance(self, instances, prompt_task, token_task):
@@ -866,8 +866,8 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             raise ValueError("No token instances")
         token_instance = min(instances,
                              key=lambda instance: (instance.sched_memory))
-        # if self.is_memory_loaded(token_instance, [prompt_task, token_task]):
-        #     return None
+        if self.is_memory_loaded(token_instance, [prompt_task, token_task]):
+            return None
         return token_instance
 
     def transfer_best_token_to_prompt(self):
@@ -1029,12 +1029,24 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         # Find best instances for prompt and token tasks
         prompt_instance = self.find_best_prompt_instance(self.prompt_instances, prompt_task)
         token_instance = self.find_best_token_instance(self.token_instances, prompt_task, token_task)
+        # 如果找不到合适的token实例，返回负载最低的prompt实例
+        # if prompt_instance is None:
+        #     prompt_instance=self.find_best_token_instance(self.token_instances, prompt_task, token_task)
+        # if token_instance is None:
+        #     token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
+        # 仍然找不到则返回负载最低实例
+        if prompt_instance is None or token_instance is None:
+            all_instances = self.prompt_instances + self.token_instances
+            prompt_instance = min(all_instances,
+                                  key=lambda instance: instance.sched_pending_tokens)
+            token_instance = prompt_instance
 
         self.interval+=1
         if self.interval % self.adjust_interval == 0:
             # self.adjust_instances_dynamically()
             # self.adjust_instances_by_load_ratio()
             res = self.adjust_instances_by_ttft_tbt_ratio()
+            # 极端情况，最后一个token实例仍然空闲则允许一个混合实例
             if res=='TTFT':
                 token_instance = prompt_instance
             elif res=='TBT':
@@ -1045,22 +1057,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             print(f"实例统计 - 混合任务实例(PT): {instance_stats['mixed_instances']}, "
                   f"纯Prompt实例(P): {instance_stats['prompt_only_instances']}, "
                   f"纯Token实例(T): {instance_stats['token_only_instances']}")
-
-        # if prompt_instance is not None and token_instance is not None:
-        #     # 极端情况，最后一个token实例仍然空闲则允许一个混合实例
-        #     if (len(self.prompt_instances)==1 and
-        #             prompt_instance.sched_pending_tokens < self.prompt_max_pending_batch_tokens * 0.2):
-        #         token_instance = prompt_instance
-        #     if (len(self.token_instances)==1 and
-        #             token_instance.sched_memory < token_instance.max_memory * 0.2):
-        #         prompt_instance = token_instance
-        # else:
-        #     if prompt_instance is None:
-        #         # 如果找不到合适的prompt实例，返回负载最低的token实例
-        #         prompt_instance=self.find_best_token_instance(self.token_instances, prompt_task, token_task)
-        #     if token_instance is None:
-        #         # 如果找不到合适的token实例，返回负载最低的prompt实例
-        #         token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
 
         if prompt_instance is None or token_instance is None:
             raise ValueError("No instances available, load is too high",prompt_instance,token_instance)
