@@ -184,14 +184,14 @@ def main():
     """
     # Define configurations for adaptive_mixed_pool and mixed_pool
     adaptive_mixed_pool_config = {
-        "name": "adaptive_pool",
+        "name": "new_method",
         "scheduler": "adaptive_mixed_pool",
         "start_state": "splitwise_25_15",
         "cluster": "0_40"
     }
     
     mixed_pool_config = {
-        "name": "mixed_pool",
+        "name": "splitwise",
         "scheduler": "mixed_pool",
         "start_state": "splitwise_25_15",
         "cluster": "0_40"
@@ -216,8 +216,8 @@ def main():
     
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
-    plt.savefig(f"{plots_dir}/adaptive_mixed_pool_vs_mixed_pool_comparison-code.png", bbox_inches='tight')
-    plt.show()
+    plt.savefig(f"{plots_dir}/TTFT-TBT.png", bbox_inches='tight')
+    # plt.show()
 
 if __name__ == "__main__":
     main()
