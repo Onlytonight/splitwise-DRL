@@ -1181,3 +1181,242 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
 
         # 如果没有新完成的请求，返回0
         return 0, 0, 0, 0
+
+class LyapunovScheduler(MixedPoolScheduler):
+    """
+    Lyapunov-based Scheduler that minimizes Drift-plus-Penalty.
+
+    It dynamically trades off between:
+    1. Stability (balancing memory pressure and queues to avoid deadlocks)
+    2. Performance (minimizing latency)
+
+    Control Parameter: V (v_parameter)
+    """
+
+    def __init__(self,
+                 application,
+                 router,
+                 overheads,
+                 executor_overheads,
+                 prompt_processors,
+                 token_processors,
+                 prompt_max_pending_batch_tokens,
+                 token_max_pending_batch_tokens,
+                 transfer_bandwidth,
+                 v_parameter=1.0,  # Weight for Latency (Penalty)
+                 beta_mem=10.0,  # Weight for Memory Pressure (Drift)
+                 gamma_queue=0.5,  # Weight for Queue backlog (Drift)
+                 theta_preempt=5.0,  # Penalty for preemption risk in Mixed
+                 debug=False):
+        super().__init__(application,
+                         router,
+                         overheads,
+                         executor_overheads,
+                         prompt_processors,
+                         token_processors,
+                         prompt_max_pending_batch_tokens,
+                         token_max_pending_batch_tokens,
+                         transfer_bandwidth,
+                         debug)
+
+        self.V = v_parameter
+        self.beta_mem = beta_mem
+        self.gamma_queue = gamma_queue
+        self.theta_preempt = theta_preempt
+
+        # Simple tracker for active transfers to estimate link congestion
+        self.active_transfers = 0
+
+    def get_memory_pressure(self, instance):
+        """
+        Calculates normalized memory pressure (0 to 1+).
+        This is the 'Virtual Queue' for VRAM.
+        """
+        if instance.max_memory == 0: return 1.0
+        usage_ratio = instance.sched_memory / instance.max_memory
+        # Non-linear penalty when approaching limit to simulate "barrier function"
+        # If usage > 90%, pressure spikes to push back traffic
+        if usage_ratio > 0.9:
+            return usage_ratio * 5
+        return usage_ratio
+
+    def estimate_latency(self, prompt_task, token_task,
+                         p_instance, t_instance, is_mixed_batch):
+        """
+        Estimates Expected Latency (The Penalty Term).
+        """
+        # 1. Compute Latency
+        # Simplified estimation: proportional to token sizes
+        # In real sim, you might use a regression model or historical average
+        compute_speed = 1.0
+        if is_mixed_batch:
+            compute_speed = 1.0 / 1.10  # 10% overhead for Mixed Batch
+
+        compute_time = (prompt_task.prompt_size + token_task.token_size) / compute_speed
+
+        # 2. Transfer Latency
+        transfer_time = 0
+        if p_instance != t_instance:
+            kv_size = prompt_task.prompt_size * 2 * 2  # simplified KV size formula
+            transfer_time = kv_size / self.transfer_bandwidth
+
+            # Add congestion delay estimation
+            # latency += active_transfers * small_delay_factor
+
+        # 3. Queueing Delay (Wait time)
+        # Estimate based on pending tokens
+        wait_time_p = p_instance.sched_pending_tokens * 0.01  # dummy coefficient
+        wait_time_t = t_instance.sched_pending_tokens * 0.001
+
+        return compute_time + transfer_time + wait_time_p + wait_time_t
+
+    def calculate_cost(self, prompt_task, token_task, p_instance, t_instance):
+        """
+        Calculates Drift-plus-Penalty cost for a candidate pair.
+        """
+        is_same_node = (p_instance == t_instance)
+        is_mixed_pool = (getattr(p_instance, 'tag', '') == 'mixed' or \
+                         getattr(p_instance, 'sched_tag', '') == 'mixed')
+
+        # --- 1. Drift Terms (Stability) ---
+
+        # Memory Pressure (Critical for avoiding deadlock)
+        # We care mostly about the TARGET node's memory
+        mem_pressure = self.get_memory_pressure(t_instance)
+
+        # Queue Pressure (Load Balancing)
+        queue_pressure = len(p_instance.pending_requests) + \
+                         len(t_instance.pending_requests)
+
+        # Preemption Risk (Specific to Mixed Nodes)
+        # If a mixed node is running T tasks, inserting a P task causes preemption
+        preemption_risk = 0
+        if is_mixed_pool:
+            # If mixed node has many pending tokens, P task will hurt them
+            preemption_risk = t_instance.sched_pending_tokens
+
+        drift = (self.beta_mem * mem_pressure) + \
+                (self.gamma_queue * queue_pressure) + \
+                (self.theta_preempt * preemption_risk)
+
+        # --- 2. Penalty Term (Performance) ---
+        expected_latency = self.estimate_latency(prompt_task, token_task,
+                                                 p_instance, t_instance,
+                                                 is_mixed_batch=is_mixed_pool)
+
+        penalty = self.V * expected_latency
+
+        return drift + penalty
+
+    def schedule(self, request, *args, **kwargs):
+        """
+        Lyapunov scheduling logic:
+        Evaluate all valid (P, T) pairs and pick the one with min(Drift + Penalty).
+        """
+        prompt_task = request.root_node
+        token_task = next(request.successors(prompt_task))
+
+        best_cost = float('inf')
+        best_pair = (None, None)
+
+        # Candidates Construction
+        # 1. Splitwise Candidates (P_pool -> T_pool)
+        # We don't scan all pairs (O(N*M) too slow), we sample best from each pool
+        # Or for simulation scale, we can iterate all if N is small (<50)
+
+        # Helper to filter valid candidates (Hard Constraints)
+        def is_valid(p, t):
+            # Hard memory constraint check
+            req_mem = 0
+            if p == t:
+                req_mem = prompt_task.max_memory(t) + token_task.max_memory(t)
+            else:
+                # If split, we only check T's memory for the token phase
+                # (Simulating P-lock release is complex, simplified here to Check T)
+                req_mem = token_task.max_memory(t)
+
+            # Using sched_memory which tracks reservations
+            return (t.sched_memory + req_mem) <= t.max_memory
+
+        # Strategy: Evaluate Top-K candidates from each category to save time
+        candidates = []
+
+        # Path A: Standard Splitwise (P_pool -> T_pool)
+        # Heuristic: Pick top 3 least loaded P and top 3 least loaded T
+        top_p = sorted(self.prompt_instances, key=lambda x: len(x.pending_requests))[:3]
+        top_t = sorted(self.token_instances, key=lambda x: x.sched_memory)[:3]
+
+        for p in top_p:
+            for t in top_t:
+                if is_valid(p, t):
+                    candidates.append((p, t))
+
+        # Path B: Mixed/Local Execution (Mixed_pool or Borrowed)
+        # Includes current Mixed instances AND potential borrows
+        potential_mixed = self.mixed_instances + \
+                          self.prompt_instances + \
+                          self.token_instances
+
+        # Pick top candidates for local execution
+        top_mixed = sorted(potential_mixed, key=lambda x: x.sched_memory)[:5]
+
+        for m in top_mixed:
+            if is_valid(m, m):
+                candidates.append((m, m))
+
+        # --- Optimization Step ---
+        for (p, t) in candidates:
+            cost = self.calculate_cost(prompt_task, token_task, p, t)
+            if cost < best_cost:
+                best_cost = cost
+                best_pair = (p, t)
+
+        # Dispatch
+        p_instance, t_instance = best_pair
+
+        if p_instance is None:
+            # Fallback: If no valid assignment found (Cluster Full),
+            # queue locally or handle rejection.
+            # Here we revert to simple RoundRobin or wait (raise Error for now)
+            # In robust system: return and retry later
+            print(f"WARNING: Cluster Saturated. Req {request.request_id}")
+            # Attempt strict fallback to min-memory node
+            all_nodes = self.prompt_instances + self.token_instances + self.mixed_instances
+            t_instance = min(all_nodes, key=lambda x: x.sched_memory)
+            p_instance = t_instance
+
+        # Handle Mixed Instance Logic (Tagging)
+        if p_instance == t_instance:
+            # If we chose a node that isn't 'mixed' yet, convert/tag it temporarily
+            if p_instance not in self.mixed_instances and \
+                    getattr(p_instance, 'sched_tag', None) != 'mixed':
+
+                # Remove from original lists if necessary or just tag
+                if p_instance in self.prompt_instances:
+                    self.prompt_instances.remove(p_instance)
+                elif p_instance in self.token_instances:
+                    self.token_instances.remove(p_instance)
+
+                self.mixed_instances.append(p_instance)
+                p_instance.sched_tag = "mixed"
+
+        # Apply Schedule
+        if p_instance != t_instance:
+            self.add_kv_cache_transfer(request, p_instance, t_instance, self.transfer_bandwidth)
+            self.active_transfers += 1  # Increment transfer counter
+
+            # Update sched_memory
+            p_instance.sched_memory += prompt_task.max_memory(p_instance)
+            # T reserves memory NOW to avoid future deadlock
+            t_instance.sched_memory += prompt_task.max_memory(t_instance) + \
+                                       token_task.max_memory(t_instance)
+        else:
+            prompt_task.instance = p_instance
+            token_task.instance = t_instance
+            prompt_task.chain = [token_task]
+            p_instance.sched_memory += prompt_task.max_memory(p_instance) + \
+                                       token_task.max_memory(p_instance)
+
+        # Bookkeeping
+        p_instance.sched_pending_tokens += prompt_task.prompt_size
+        t_instance.sched_pending_tokens += 1

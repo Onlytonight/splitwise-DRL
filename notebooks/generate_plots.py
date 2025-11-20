@@ -200,7 +200,7 @@ def main():
     configs = [adaptive_mixed_pool_config, mixed_pool_config]
     
     # Define traces for different loads (rr_code_x where x varies)
-    traces = [f"rr_code_{i}" for i in range(30, 160, 10)]  # Example range
+    traces = [f"rr_conv_{i}" for i in range(30, 160, 10)]  # Example range
     
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")
@@ -211,12 +211,12 @@ def main():
         traces,
         y_vars=["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"],
         y_vars_labels=["TTFT", "TBT", "E2E"],  # 添加这行以确保标签正确
-        title="Performance Comparison: adaptive_mixed_pool vs mixed_pool"
+        title="Performance Comparison"
     )
     
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
-    plt.savefig(f"{plots_dir}/TTFT-TBT.png", bbox_inches='tight')
+    plt.savefig(f"{plots_dir}/TTFT-TBT-conv.png", bbox_inches='tight')
     # plt.show()
 
 if __name__ == "__main__":
