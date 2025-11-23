@@ -1,28 +1,25 @@
-import datetime
-import glob
-import math
 import os
-from pathlib import Path
 import pandas as pd
-import plotly.express as px
-import numpy as np
+import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import seaborn as sns
-import scipy.stats as stats
-from plotly.subplots import make_subplots
-import sys
-sys.path.append('../notebooks')
-
+import numpy as np
+from utils import get_summary_data, get_request_data
 from perf_model import PerfModel
-from utils import *
 
-# Set the max columns to none
-pd.set_option('display.max_columns', None)
+# 设置全局字体大小，比默认字体小2号
+plt.rcParams.update({
+    'font.size': 8,  # 默认字体大小减小2号
+    'axes.titlesize': 10,  # 标题字体大小
+    'axes.labelsize': 8,   # 轴标签字体大小
+    'xtick.labelsize': 6,  # x轴刻度字体大小
+    'ytick.labelsize': 6,  # y轴刻度字体大小
+    'legend.fontsize': 6,  # 图例字体大小
+    'figure.titlesize': 12 # 图形标题字体大小
+})
 
-# Configuration
 results_dir = "../results"
-plots_dir = "../plots"
+plots_dir = "../plots/new"
 perf_model_path = "../data/perf_model.csv"
 
 def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
@@ -72,6 +69,9 @@ def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
                 result[f"ttft_times_p{int(quantile * 100)}"] = summary_df[f"ttft_times_p{int(quantile * 100)}"][0]
                 result[f"tbt_times_p{int(quantile * 100)}"] = summary_df[f"tbt_times_p{int(quantile * 100)}"][0]
                 result[f"e2e_times_p{int(quantile * 100)}"] = summary_df[f"response_times_p{int(quantile * 100)}"][0]
+                # 添加nth_token_overheads和queue_times的统计信息
+                result[f"nth_token_overheads_p{int(quantile * 100)}"] = request_df["nth_token_overheads"].quantile(quantile)
+                result[f"queue_times_p{int(quantile * 100)}"] = request_df["queue_times"].quantile(quantile)
             result["oom"] = oom
 
             # Save results to later create a dataframe
@@ -155,6 +155,9 @@ def plot_y_vs_trace_new(results_df,
         ax.set_xlabel("Request Rate (req/s)")
         xlabels = [trace.split("_")[2] for trace in traces]
         ax.set_xticks(ticks=range(0, len(traces)), labels=xlabels)
+        # 解决横坐标数字重叠问题
+        ax.tick_params(axis='x', rotation=45)  # 旋转x轴标签
+        ax.set_xticklabels(xlabels, rotation=45, ha='right')  # 设置标签旋转和对齐方式
 
     # Create a single legend in center of figure
     handles, labels = axs[0][0].get_legend_handles_labels()
@@ -177,6 +180,60 @@ def plot_y_vs_trace_new(results_df,
     # Set 300dpi
     plt.gcf().set_dpi(300)
 
+def plot_additional_metrics(results_df,
+                           traces,
+                           y_vars=["nth_token_overheads", "queue_times"],
+                           y_vars_labels=["Nth Token Overheads", "Queue Times"],
+                           quantiles=[0.5, 0.9, 0.99],
+                           title=None):
+    """
+    Create plots for additional metrics like nth_token_overheads and queue_times.
+    """
+    fig, axs = plt.subplots(nrows=len(y_vars),
+                           ncols=len(quantiles),
+                           figsize=(len(quantiles) * 2.5, len(y_vars) * 1.5),
+                           sharex=True,
+                           constrained_layout=True)
+
+    # Plot
+    for y_var in y_vars:
+        for quantile in quantiles:
+            sns.lineplot(data=results_df,
+                         x="trace",
+                         y=f"{y_var}_p{int(quantile * 100)}",
+                         hue="name",
+                         style="name",
+                         markers=True,
+                         markersize=7,
+                         ax=axs[y_vars.index(y_var)][quantiles.index(quantile)])
+
+    for ax in axs.flatten():
+        ax.grid()
+        ax.get_legend().set_visible(False)
+        ax.set_xlabel("Request Rate (req/s)")
+        xlabels = [trace.split("_")[2] for trace in traces]
+        ax.set_xticks(ticks=range(0, len(traces)), labels=xlabels)
+        # 解决横坐标数字重叠问题
+        ax.tick_params(axis='x', rotation=45)
+        ax.set_xticklabels(xlabels, rotation=45, ha='right')
+
+    # Create a single legend in center of figure
+    handles, labels = axs[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', ncol=3, title="", bbox_to_anchor=(0.5, 1.01))
+
+    for y_var in y_vars:
+        for quantile in quantiles:
+            axs[y_vars.index(y_var)][quantiles.index(quantile)].set_ylabel(
+                f"Time (s)\np{int(quantile*100)} {y_vars_labels[y_vars.index(y_var)]}")
+            # 设置y轴范围
+            axs[y_vars.index(y_var)][quantiles.index(quantile)].set_ylim(bottom=0)
+            
+    if title:
+        fig.suptitle(title)
+
+    plt.margins(x=0)
+    # Set 300dpi
+    plt.gcf().set_dpi(300)
 
 def main():
     """
@@ -200,23 +257,37 @@ def main():
     configs = [adaptive_mixed_pool_config, mixed_pool_config]
     
     # Define traces for different loads (rr_code_x where x varies)
-    traces = [f"rr_conv_{i}" for i in range(30, 160, 10)]  # Example range
+    traces_index = 0
+    traces_name =['conv','code']
+    traces = [f"rr_{traces_name[traces_index]}_{i}" for i in range(30, 160, 10)]  # Example range
     
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")
     
-    # Generate plots
+    # Generate plots for slowdown metrics
     plot_y_vs_trace_new(
         results_df,
         traces,
         y_vars=["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"],
-        y_vars_labels=["TTFT", "TBT", "E2E"],  # 添加这行以确保标签正确
-        title="Performance Comparison"
+        y_vars_labels=["TTFT", "TBT", "E2E"],
+        title=None
     )
     
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
-    plt.savefig(f"{plots_dir}/TTFT-TBT-conv-new.png", bbox_inches='tight')
+    plt.savefig(f"{plots_dir}/TTFT-TBT-{traces_name[traces_index]}-new.png", bbox_inches='tight')
+    
+    # Generate plots for additional metrics (nth_token_overheads and queue_times)
+    plot_additional_metrics(
+        results_df,
+        traces,
+        y_vars=["nth_token_overheads", "queue_times"],
+        y_vars_labels=["Nth Token Overheads", "Queue Times"],
+        title=None
+    )
+    
+    # Save additional metrics plot
+    plt.savefig(f"{plots_dir}/additional_metrics_{traces_name[traces_index]}-new.png", bbox_inches='tight')
     # plt.show()
 
 if __name__ == "__main__":
