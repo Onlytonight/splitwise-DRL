@@ -242,7 +242,7 @@ def main():
     # Define configurations for adaptive_mixed_pool and mixed_pool
     adaptive_mixed_pool_config = {
         "name": "new_method",
-        "scheduler": "adaptive_pool",
+        "scheduler": "all_mixed_pool",
         "start_state": "splitwise_25_15",
         "cluster": "0_40"
     }
@@ -275,7 +275,8 @@ def main():
     
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
-    plt.savefig(f"{plots_dir}/TTFT-TBT-{traces_name[traces_index]}-new.png", bbox_inches='tight')
+    name = traces_name[traces_index]+"allmix"
+    plt.savefig(f"{plots_dir}/{name}.png", bbox_inches='tight')
     
     # Generate plots for additional metrics (nth_token_overheads and queue_times)
     plot_additional_metrics(
@@ -287,7 +288,7 @@ def main():
     )
     
     # Save additional metrics plot
-    plt.savefig(f"{plots_dir}/additional_metrics_{traces_name[traces_index]}-new.png", bbox_inches='tight')
+    plt.savefig(f"{plots_dir}/{name}.png", bbox_inches='tight')
     # plt.show()
 
 if __name__ == "__main__":
