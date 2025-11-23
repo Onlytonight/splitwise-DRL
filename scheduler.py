@@ -1535,13 +1535,10 @@ class SeparateMixedScheduler(KVScheduler):
         token_instance = self.find_best_token_instance(self.mixed_instances, prompt_task, token_task)
 
         # 如果找不到合适的实例，回退到负载最低的实例
-        if prompt_instance is None:
+        if prompt_instance is None or token_instance is None:
             prompt_instance = min(self.mixed_instances,
                                   key=lambda instance: instance.sched_pending_tokens)
-
-        if token_instance is None:
-            token_instance = min(self.mixed_instances,
-                                 key=lambda instance: instance.sched_memory)
+            token_instance=prompt_instance
 
         if prompt_instance != token_instance:
             # 如果实例不同，需要传输KV缓存
