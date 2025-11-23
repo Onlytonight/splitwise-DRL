@@ -276,7 +276,7 @@ def main():
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
     name = traces_name[traces_index]+"allmix"
-    plt.savefig(f"{plots_dir}/{name}.png", bbox_inches='tight')
+    plt.savefig(f"{plots_dir}/{name}-TTFT.png", bbox_inches='tight')
     
     # Generate plots for additional metrics (nth_token_overheads and queue_times)
     plot_additional_metrics(
