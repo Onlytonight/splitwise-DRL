@@ -1420,3 +1420,146 @@ class LyapunovScheduler(MixedPoolScheduler):
         # Bookkeeping
         p_instance.sched_pending_tokens += prompt_task.prompt_size
         t_instance.sched_pending_tokens += 1
+
+
+class SeparateMixedScheduler(KVScheduler):
+    """
+    SeparateMixedScheduler 将所有实例设置为混合模式，但为prompt和token任务分别查找最佳实例。
+    这样既能充分利用所有实例的混合处理能力，又能通过分别优化任务分配来提高整体性能。
+    """
+
+    def __init__(self,
+                 application,
+                 router,
+                 overheads,
+                 executor_overheads,
+                 prompt_processors,
+                 token_processors,
+                 prompt_max_pending_batch_tokens,
+                 token_max_pending_batch_tokens,
+                 transfer_bandwidth,
+                 debug=False):
+        super().__init__(application,
+                         router,
+                         overheads,
+                         executor_overheads,
+                         prompt_processors,
+                         token_processors,
+                         debug)
+        self.prompt_max_pending_batch_tokens = prompt_max_pending_batch_tokens
+        self.token_max_pending_batch_tokens = token_max_pending_batch_tokens
+        self.transfer_bandwidth = transfer_bandwidth * 1024 ** 3  # convert to B/s
+        self.mixed_instances = []  # 所有实例都在混合实例池中
+        # 保留这些列表以保持兼容性，但不会主动使用它们
+        self.prompt_instances = []
+        self.token_instances = []
+        print("SeparateMixedScheduler initialized - All instances will be used in mixed mode")
+
+    def add_instance(self, instance):
+        """添加实例到混合实例池"""
+        super().add_instance(instance)
+        # 确保所有实例都被添加到混合实例列表
+        if instance not in self.mixed_instances:
+            self.mixed_instances.append(instance)
+            instance.sched_tag = "mixed"  # 标记为混合实例
+        # 从专用池中移除（如果存在）
+        if instance in self.prompt_instances:
+            self.prompt_instances.remove(instance)
+        if instance in self.token_instances:
+            self.token_instances.remove(instance)
+
+    def is_memory_loaded(self, instance, tasks):
+        """检查实例内存是否已满"""
+        request_memory = sum(task.max_memory(instance) for task in tasks)
+        if instance.sched_memory + request_memory >= instance.max_memory:
+            return True
+        return False
+
+    def is_queue_long(self, instance, task):
+        """检查队列是否过长"""
+        if len(instance.pending_queue) > 0 and \
+                instance.sched_pending_tokens + task.tokens_per_iteration > \
+                self.prompt_max_pending_batch_tokens:
+            return True
+        return False
+
+    def find_best_prompt_instance(self, instances, prompt_task):
+        """为prompt任务查找最佳混合实例"""
+        if len(instances) == 0:
+            return None
+
+        # 根据队列长度选择最佳实例
+        prompt_instance = min(instances,
+                              key=lambda instance: instance.sched_pending_tokens)
+
+        # 检查队列是否过长
+        if self.is_queue_long(prompt_instance, prompt_task):
+            return None
+
+        return prompt_instance
+
+    def find_best_token_instance(self, instances, prompt_task, token_task):
+        """为token任务查找最佳混合实例"""
+        if len(instances) == 0:
+            return None
+
+        # 根据内存使用选择最佳实例
+        token_instance = min(instances,
+                             key=lambda instance: instance.sched_memory)
+
+        # 检查内存是否足够
+        if self.is_memory_loaded(token_instance, [prompt_task, token_task]):
+            return None
+
+        return token_instance
+
+    def notify_free_instance(self, instance):
+        """通知实例空闲，但保持其混合模式"""
+        # 即使空闲也保持为混合实例
+        if instance.sched_tag != "mixed" and instance in self.mixed_instances:
+            instance.sched_tag = "mixed"
+        # 不从混合池中移除实例，确保所有实例始终可用作混合实例
+
+    def schedule(self, request, *args, **kwargs):
+        """
+        调度请求：为prompt和token任务分别在混合实例池中查找最佳实例
+        """
+        if len(self.mixed_instances) == 0:
+            raise ValueError("No instances available")
+
+        prompt_task = request.root_node
+        token_task = next(request.successors(prompt_task))
+
+        # 分别为prompt和token任务在混合实例池中查找最佳实例
+        prompt_instance = self.find_best_prompt_instance(self.mixed_instances, prompt_task)
+        token_instance = self.find_best_token_instance(self.mixed_instances, prompt_task, token_task)
+
+        # 如果找不到合适的实例，回退到负载最低的实例
+        if prompt_instance is None:
+            prompt_instance = min(self.mixed_instances,
+                                  key=lambda instance: instance.sched_pending_tokens)
+
+        if token_instance is None:
+            token_instance = min(self.mixed_instances,
+                                 key=lambda instance: instance.sched_memory)
+
+        if prompt_instance != token_instance:
+            # 如果实例不同，需要传输KV缓存
+            self.add_kv_cache_transfer(request,
+                                       prompt_instance,
+                                       token_instance,
+                                       self.transfer_bandwidth)
+            prompt_instance.sched_memory += prompt_task.max_memory(prompt_instance)
+            token_instance.sched_memory += prompt_task.max_memory(token_instance) + \
+                                           token_task.max_memory(token_instance)
+        else:
+            # 在同一实例上运行
+            prompt_task.instance = prompt_instance
+            token_task.instance = token_instance
+            prompt_instance.sched_memory += prompt_task.max_memory(prompt_instance) + \
+                                            token_task.max_memory(prompt_instance)
+            prompt_task.chain = [token_task]
+
+        # 更新待处理令牌数
+        prompt_instance.sched_pending_tokens += prompt_task.prompt_size
+        token_instance.sched_pending_tokens += 1

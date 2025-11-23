@@ -5,7 +5,7 @@ TRACE_conv=rr_conv_30,rr_conv_40,rr_conv_50,rr_conv_60,rr_conv_70,rr_conv_80,rr_
 SEED=0
 
 python run.py --multirun\
-    applications.0.scheduler=Lyapunov_pool \
+    applications.0.scheduler=all_mixed_pool \
     cluster=half_half \
     cluster.servers.0.count=0 \
     cluster.servers.1.count=40 \
