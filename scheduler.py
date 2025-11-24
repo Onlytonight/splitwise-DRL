@@ -770,7 +770,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.token_instances = []
         self.load_balance_fac = 2
         self.interval=0
-        self.adjust_interval = 10
+        self.adjust_interval = 5
         print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval,
               "prompt max pending batch tokens is", self.prompt_max_pending_batch_tokens)
         self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
@@ -870,27 +870,34 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             return None
         return token_instance
 
-    def transfer_best_token_to_prompt(self):
+    def transfer_token_to_prompt(self,idlest_token_instance):
+        assert idlest_token_instance.tag == "token"
         if len(self.token_instances) <= 1:
             # print("can not transfer best token to prompt ")
             return None
-        idlest_token_instance = min(self.token_instances,
-                                    key=lambda instance: instance.sched_memory)
         self.token_instances.remove(idlest_token_instance)
         self.prompt_instances.append(idlest_token_instance)
         return idlest_token_instance
 
-    def transfer_best_prompt_to_token(self):
+    def transfer_best_token_to_prompt(self):
+        idlest_token_instance = min(self.token_instances,
+                                    key=lambda instance: instance.sched_memory)
+        return self.transfer_token_to_prompt(idlest_token_instance)
+
+    def transfer_prompt_to_token(self, idlest_prompt_instance):
+        assert idlest_prompt_instance.tag == "prompt"
         if len(self.prompt_instances) <= 1:
             # print("can not transfer best prompt to token ")
             return None
-
-        idlest_prompt_instance = min(self.prompt_instances,
-                                     key=lambda instance: instance.sched_pending_tokens)
-        # 将该prompt实例从prompt池移到token池
         self.prompt_instances.remove(idlest_prompt_instance)
         self.token_instances.append(idlest_prompt_instance)
         return idlest_prompt_instance
+
+    def transfer_best_prompt_to_token(self):
+        idlest_prompt_instance = min(self.prompt_instances,
+                                     key=lambda instance: instance.sched_pending_tokens)
+        # 将该prompt实例从prompt池移到token池
+        return self.transfer_prompt_to_token(idlest_prompt_instance)
 
     def notify_free_instance(self, instance):
         if instance.sched_tag == "mixed":
@@ -1030,10 +1037,12 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         prompt_instance = self.find_best_prompt_instance(self.prompt_instances, prompt_task)
         token_instance = self.find_best_token_instance(self.token_instances, prompt_task, token_task)
         # 如果找不到合适的token实例，返回负载最低的prompt实例
-        # if prompt_instance is None:
-        #     prompt_instance=self.find_best_token_instance(self.token_instances, prompt_task, token_task)
-        # if token_instance is None:
-        #     token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
+        if prompt_instance is None:
+            prompt_instance=self.find_best_token_instance(self.token_instances, prompt_task, token_task)
+            self.transfer_token_to_prompt(prompt_instance)
+        if token_instance is None:
+            token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
+            self.transfer_prompt_to_token(token_instance)
         # 仍然找不到则返回负载最低实例
         if prompt_instance is None or token_instance is None:
             all_instances = self.prompt_instances + self.token_instances
