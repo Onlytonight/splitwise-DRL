@@ -776,8 +776,8 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
         self.interval_ttft_stats = []  # 存储两次schedule调用间的TTFT统计
         from notebooks.perf_model import PerfModel
-        # self.perf_model = PerfModel("D:\homework\网络\论文\LLMshedule\pd分离\splitwise-DRL\data\perf_model.csv", init=True)
-        self.perf_model = PerfModel("/home/xfusion/conda/splitwise-DRL/data/perf_model.csv", init=True)
+        self.perf_model = PerfModel("D:\homework\网络\论文\LLMshedule\pd分离\splitwise-DRL\data\perf_model.csv", init=True)
+        # self.perf_model = PerfModel("/home/xfusion/conda/splitwise-DRL/data/perf_model.csv", init=True)
 
 
     def is_memory_loaded(self, instance, tasks):
@@ -871,7 +871,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         return token_instance
 
     def transfer_token_to_prompt(self,idlest_token_instance):
-        assert idlest_token_instance.tag == "token"
         if len(self.token_instances) <= 1:
             # print("can not transfer best token to prompt ")
             return None
@@ -885,7 +884,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         return self.transfer_token_to_prompt(idlest_token_instance)
 
     def transfer_prompt_to_token(self, idlest_prompt_instance):
-        assert idlest_prompt_instance.tag == "prompt"
         if len(self.prompt_instances) <= 1:
             # print("can not transfer best prompt to token ")
             return None
