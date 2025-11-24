@@ -770,7 +770,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.token_instances = []
         self.load_balance_fac = 2
         self.interval=0
-        self.adjust_interval = 5
+        self.adjust_interval = 1
         print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval,
               "prompt max pending batch tokens is", self.prompt_max_pending_batch_tokens)
         self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
@@ -1035,12 +1035,14 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         prompt_instance = self.find_best_prompt_instance(self.prompt_instances, prompt_task)
         token_instance = self.find_best_token_instance(self.token_instances, prompt_task, token_task)
         # 如果找不到合适的token实例，返回负载最低的prompt实例
-        if prompt_instance is None:
-            prompt_instance=self.find_best_token_instance(self.token_instances, prompt_task, token_task)
-            self.transfer_token_to_prompt(prompt_instance)
-        if token_instance is None:
-            token_instance=self.find_best_prompt_instance(self.prompt_instances, prompt_task)
-            self.transfer_prompt_to_token(token_instance)
+        # if prompt_instance is None:
+        #     prompt_instance = min(self.token_instances,
+        #                           key=lambda instance: instance.sched_pending_tokens)
+        #     self.transfer_token_to_prompt(prompt_instance)
+        # if token_instance is None:
+        #     token_instance = min(self.prompt_instances,
+        #                          key=lambda instance: (instance.sched_memory))
+        #     self.transfer_prompt_to_token(token_instance)
         # 仍然找不到则返回负载最低实例
         if prompt_instance is None or token_instance is None:
             all_instances = self.prompt_instances + self.token_instances
@@ -1103,7 +1105,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             - 如果TBT比TTFT显著高(倍数超过阈值)，则增加token实例(转换prompt实例)
         """
         # 设置调整阈值，可根据实际情况调整
-        adjust_threshold = 2  # 当一个指标是另一个的1.5倍以上时进行调整
+        adjust_threshold = 5  # 当一个指标是另一个的1.5倍以上时进行调整
         p50_normalized_ttft,_, p50_normalized_tbt,_ = self.get_period_result()
         # 确保两个指标都有效(不为0)
         if p50_normalized_ttft > 0 and p50_normalized_tbt > 0:
