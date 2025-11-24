@@ -275,7 +275,7 @@ def main():
     
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
-    name = traces_name[traces_index]+configs[0]["scheduler"]
+    name = traces_name[traces_index]+configs[0]["scheduler"]+"add NONE pro"
     plt.savefig(f"{plots_dir}/{name}-TTFT.png", bbox_inches='tight')
     
     # Generate plots for additional metrics (nth_token_overheads and queue_times)
