@@ -19,7 +19,7 @@ plt.rcParams.update({
 })
 
 results_dir = "../results"
-plots_dir = "../plots/new"
+plots_dir = "../plots/Unified"
 perf_model_path = "../data/perf_model.csv"
 
 def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
@@ -242,7 +242,7 @@ def main():
     # Define configurations for adaptive_mixed_pool and mixed_pool
     adaptive_mixed_pool_config = {
         "name": "new_method",
-        "scheduler": "adaptive_pool",
+        "scheduler": "Unified_pool",
         "start_state": "splitwise_25_15",
         "cluster": "0_40"
     }
@@ -275,7 +275,7 @@ def main():
     
     # Save plot
     os.makedirs(plots_dir, exist_ok=True)
-    name = traces_name[traces_index]+configs[0]["scheduler"]+"add NONE pro"
+    name = traces_name[traces_index]+configs[0]["scheduler"]+"Unified"
     plt.savefig(f"{plots_dir}/{name}-TTFT.png", bbox_inches='tight')
     
     # Generate plots for additional metrics (nth_token_overheads and queue_times)
