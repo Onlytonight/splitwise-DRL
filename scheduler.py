@@ -1569,397 +1569,14 @@ class SeparateMixedScheduler(KVScheduler):
         # 更新待处理令牌数
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
-        
+
+
+
+
 class UnifiedFluidScheduler(KVScheduler):
     """
-    Fixed Version: Includes memory release logic to prevent deadlock/crashes.
-    """
-
-    def __init__(self,
-                 application,
-                 router,
-                 overheads,
-                 executor_overheads,
-                 prompt_processors,
-                 token_processors,
-                 transfer_bandwidth,
-                 interference_penalty=0.3, # 30% 混合惩罚
-                 enable_pipelining=True,
-                 debug=False):
-        super().__init__(application,
-                         router,
-                         overheads,
-                         executor_overheads,
-                         prompt_processors,
-                         token_processors,
-                         debug)
-        
-        self.unified_instances = [] 
-        self.transfer_bandwidth = transfer_bandwidth * 1024**3 
-        self.interference_penalty = interference_penalty
-        self.enable_pipelining = enable_pipelining
-
-    def add_instance(self, instance):
-        super().add_instance(instance)
-        if instance not in self.unified_instances:
-            self.unified_instances.append(instance)
-            # [Fix 1] 确保属性初始化，防止 AttributeError 或 脏数据
-            if not hasattr(instance, 'sched_memory'):
-                instance.sched_memory = 0
-            if not hasattr(instance, 'sched_pending_tokens'):
-                instance.sched_pending_tokens = 0
-
-    def estimate_compute_time(self, task, instance):
-        # 简单估算模型，如果有更复杂的 Profiler 可以替换
-        if task.task_type == "prompt":
-            return task.prompt_size * 0.0005 
-        else:
-            return 1 * 0.001 
-
-    def calculate_cost(self, p_node, t_node, request, prompt_task, token_task):
-        # 1. Load Balancing Cost
-        wait_cost_p = len(p_node.pending_requests) * 0.01 
-        wait_cost_t = len(t_node.pending_requests) * 0.01
-
-        # 2. Transfer Cost
-        transfer_cost = 0
-        kv_size = request.estimate_kv_cache_size(prompt_task.prompt_size, p_node.model)
-        
-        if p_node != t_node:
-            raw_transfer_time = kv_size / self.transfer_bandwidth
-            if self.enable_pipelining:
-                transfer_cost = raw_transfer_time * 0.1 
-            else:
-                transfer_cost = raw_transfer_time
-
-        # 3. Interference Cost
-        interference_cost = 0
-        if p_node == t_node:
-            # 如果节点已经在做 Token 生成 (Load > 10)，施加混合惩罚
-            if p_node.sched_pending_tokens > 10: 
-                estimated_p_time = self.estimate_compute_time(prompt_task, p_node)
-                interference_cost = estimated_p_time * self.interference_penalty
-
-        return wait_cost_p + wait_cost_t + transfer_cost + interference_cost
-
-    def check_memory_feasibility(self, instance, new_memory_demand):
-        available = instance.max_memory - instance.sched_memory
-        # 加一个小 buffer (例如 1MB) 防止浮点数误差
-        return available >= new_memory_demand - 1e6
-
-    # --- 调度核心入口 ---
-    def run_request(self, request):
-        request.run_on_executor()
-        success = self.schedule(request)
-        
-        if not success:
-            # Backpressure: 留在 pending_queue 中等待
-            return
-
-        self.spawn_executor(self.executor_type, request)
-        self.pending_queue.remove(request)
-        self.executing_queue.append(request)
-
-    # --- [Fix 2] 核心修复：资源释放逻辑 ---
-    def request_completion(self, request):
-        """
-        当请求完成时调用，用于释放显存占用 (sched_memory) 并触发排队任务
-        """
-        # 1. 找到该请求当时占用的节点
-        prompt_task = request.root_node
-        token_task = next(request.successors(prompt_task))
-        
-        p_node = prompt_task.instance
-        t_node = token_task.instance
-
-        # 2. 计算需要释放的显存 (逻辑是 schedule 的逆过程)
-        
-        # P 节点任务完成 (临时显存释放)
-        p_mem_freed = prompt_task.max_memory(p_node)
-        p_node.sched_memory -= p_mem_freed
-        if p_node.sched_memory < 0: p_node.sched_memory = 0
-        p_node.sched_pending_tokens -= prompt_task.prompt_size
-
-        # T 节点任务完成 (KV Cache 释放)
-        # 注意：在 schedule 里，如果是远程传输，t_node 增加了 (p_max + t_max)
-        # 如果是本地，也增加了 (p_max + t_max)
-        # 所以逻辑是通用的：
-        
-        # 只有当 p 和 t 不是同一个节点时，我们需要分别减。
-        # 如果是同一个节点，我们需要减一次总和，避免双重扣减的错觉
-        
-        if p_node != t_node:
-             t_mem_freed = prompt_task.max_memory(t_node) + token_task.max_memory(t_node)
-             t_node.sched_memory -= t_mem_freed
-             if t_node.sched_memory < 0: t_node.sched_memory = 0
-             t_node.sched_pending_tokens -= 1
-        else:
-             # 如果是同一节点，上面已经减去了 p_mem_freed
-             # 这里还需要减去 t_task 部分以及 KV 占用
-             # 本地调度的内存是：p_max + t_max
-             # 上面减了 p_max，这里还需要减 t_max
-             t_node.sched_memory -= token_task.max_memory(t_node)
-             if t_node.sched_memory < 0: t_node.sched_memory = 0
-             t_node.sched_pending_tokens -= 1
-
-        # 3. 调用父类处理（通知 Router 等）
-        super().request_completion(request)
-
-        # 4. [重要] 有资源释放了，尝试运行积压的任务
-        self.try_schedule_pending()
-
-    def notify_free_instance(self, instance):
-        # 硬件通知空闲，也尝试调度
-        self.try_schedule_pending()
-
-    def try_schedule_pending(self):
-        """
-        Head-of-Line Blocking Retry: 尝试调度队列头的任务
-        """
-        if len(self.pending_queue) > 0:
-            next_req = self.pending_queue[0]
-            # 再次调用 run_request (它内部会调用 schedule)
-            self.run_request(next_req)
-
-    def schedule(self, request, *args, **kwargs):
-        if len(self.unified_instances) == 0:
-            raise ValueError("No instances available")
-
-        prompt_task = request.root_node
-        token_task = next(request.successors(prompt_task))
-
-        best_cost = float('inf')
-        best_p_instance = None
-        best_t_instance = None
-        
-        candidates = np.random.permutation(self.unified_instances)
-
-        for p_cand in candidates:
-            # 显存预检查：Prompt 阶段
-            p_mem_req = prompt_task.max_memory(p_cand)
-            if not self.check_memory_feasibility(p_cand, p_mem_req):
-                continue 
-
-            for t_cand in candidates:
-                # 显存预检查：Token 阶段 (KV Storage)
-                # Admission Control 防死锁的关键
-                if p_cand == t_cand:
-                    total_mem_req = p_mem_req + token_task.max_memory(t_cand)
-                    if not self.check_memory_feasibility(t_cand, total_mem_req):
-                        continue
-                else:
-                    t_mem_req = p_mem_req + token_task.max_memory(t_cand) 
-                    if not self.check_memory_feasibility(t_cand, t_mem_req):
-                        continue
-
-                cost = self.calculate_cost(p_cand, t_cand, request, prompt_task, token_task)
-                
-                if cost < best_cost:
-                    best_cost = cost
-                    best_p_instance = p_cand
-                    best_t_instance = t_cand
-
-        # 依然没找到位置：返回 False
-        if best_p_instance is None or best_t_instance is None:
-            return False
-
-        # --- 资源锁定与 DAG 修改 ---
-        if best_p_instance != best_t_instance:
-            self.add_kv_cache_transfer(request,
-                                       best_p_instance,
-                                       best_t_instance,
-                                       self.transfer_bandwidth)
-            
-            best_p_instance.sched_memory += prompt_task.max_memory(best_p_instance)
-            best_t_instance.sched_memory += (prompt_task.max_memory(best_t_instance) + 
-                                             token_task.max_memory(best_t_instance))
-        else:
-            prompt_task.instance = best_p_instance
-            token_task.instance = best_t_instance
-            prompt_task.chain = [token_task]
-            
-            total_req = prompt_task.max_memory(best_p_instance) + token_task.max_memory(best_t_instance)
-            best_p_instance.sched_memory += total_req
-
-        best_p_instance.sched_pending_tokens += prompt_task.prompt_size
-        best_t_instance.sched_pending_tokens += 1
-        
-        return True
-    """
-    Fixed Version: Handles Backpressure correctly by overriding run_request.
-    """
-
-    def __init__(self,
-                 application,
-                 router,
-                 overheads,
-                 executor_overheads,
-                 prompt_processors,
-                 token_processors,
-                 transfer_bandwidth,
-                 interference_penalty=0.3,
-                 enable_pipelining=True,
-                 debug=False):
-        super().__init__(application,
-                         router,
-                         overheads,
-                         executor_overheads,
-                         prompt_processors,
-                         token_processors,
-                         debug)
-        
-        # 统一资源池逻辑
-        self.unified_instances = [] 
-        self.transfer_bandwidth = transfer_bandwidth * 1024**3 
-        self.interference_penalty = interference_penalty
-        self.enable_pipelining = enable_pipelining
-
-    def add_instance(self, instance):
-        super().add_instance(instance)
-        if instance not in self.unified_instances:
-            self.unified_instances.append(instance)
-
-    def estimate_compute_time(self, task, instance):
-        if task.task_type == "prompt":
-            return task.prompt_size * 0.0005 
-        else:
-            return 1 * 0.001 
-
-    def calculate_cost(self, p_node, t_node, request, prompt_task, token_task):
-        # 1. Load Balancing Cost
-        wait_cost_p = len(p_node.pending_requests) * 0.01 
-        wait_cost_t = len(t_node.pending_requests) * 0.01
-
-        # 2. Transfer Cost
-        transfer_cost = 0
-        kv_size = request.estimate_kv_cache_size(prompt_task.prompt_size, p_node.model)
-        
-        if p_node != t_node:
-            raw_transfer_time = kv_size / self.transfer_bandwidth
-            if self.enable_pipelining:
-                transfer_cost = raw_transfer_time * 0.1 
-            else:
-                transfer_cost = raw_transfer_time
-
-        # 3. Interference Cost
-        interference_cost = 0
-        if p_node == t_node:
-            if p_node.sched_pending_tokens > 10: 
-                estimated_p_time = self.estimate_compute_time(prompt_task, p_node)
-                interference_cost = estimated_p_time * self.interference_penalty
-
-        return wait_cost_p + wait_cost_t + transfer_cost + interference_cost
-
-    def check_memory_feasibility(self, instance, new_memory_demand):
-        available = instance.max_memory - instance.sched_memory
-        return available >= new_memory_demand
-
-    # --- 修复核心：覆写 run_request ---
-    def run_request(self, request):
-        """
-        Override standard run_request to support Backpressure (waiting).
-        """
-        request.run_on_executor()
-        
-        # 尝试调度
-        success = self.schedule(request)
-
-        if not success:
-            # [关键修复] 如果调度失败（反压），直接返回，不生成Executor，不从 pending_queue 移除
-            if self.debug:
-                print(f"[FluidSched] Backpressure activated for Req {request.request_id}. Waiting in queue.")
-            return
-
-        # 如果成功，继续执行基类的标准流程
-        self.spawn_executor(self.executor_type, request)
-        self.pending_queue.remove(request)
-        self.executing_queue.append(request)
-
-    # --- 修复核心：实现重试机制 ---
-    def notify_free_instance(self, instance):
-        """
-        Trigger retry when an instance frees up memory/slots.
-        """
-        # 必须先更新资源的 sched_memory 等状态（如果有相应逻辑）
-        # 这里简化处理：只要有节点空闲，就尝试看看 pending_queue 里的任务能不能做了
-        if len(self.pending_queue) > 0:
-            # 尝试重新运行队头的任务
-            next_request = self.pending_queue[0]
-            
-            # 注意：run_request 会再次调用 schedule。
-            # 如果这次成功了，它会把自己从 pending_queue 移走。
-            # 这是一个简单的 Head-of-Line 重试逻辑。
-            self.run_request(next_request)
-
-    def schedule(self, request, *args, **kwargs):
-        """
-        Returns True if scheduled successfully, False otherwise.
-        """
-        if len(self.unified_instances) == 0:
-            raise ValueError("No instances available")
-
-        prompt_task = request.root_node
-        token_task = next(request.successors(prompt_task))
-
-        best_cost = float('inf')
-        best_p_instance = None
-        best_t_instance = None
-        
-        candidates = np.random.permutation(self.unified_instances)
-
-        for p_cand in candidates:
-            # 检查显存（Prompt任务临时显存）
-            p_mem_req = prompt_task.max_memory(p_cand)
-            if not self.check_memory_feasibility(p_cand, p_mem_req):
-                continue 
-
-            for t_cand in candidates:
-                # 检查显存（预约制，防止死锁）
-                if p_cand == t_cand:
-                    total_mem_req = p_mem_req + token_task.max_memory(t_cand)
-                    if not self.check_memory_feasibility(t_cand, total_mem_req):
-                        continue
-                else:
-                    t_mem_req = p_mem_req + token_task.max_memory(t_cand) 
-                    if not self.check_memory_feasibility(t_cand, t_mem_req):
-                        continue
-
-                cost = self.calculate_cost(p_cand, t_cand, request, prompt_task, token_task)
-                
-                if cost < best_cost:
-                    best_cost = cost
-                    best_p_instance = p_cand
-                    best_t_instance = t_cand
-
-        # [关键修复] 如果没找到路径，返回 False 通知 run_request 等待
-        if best_p_instance is None or best_t_instance is None:
-            return False
-
-        # --- Execution Assignment ---
-        if best_p_instance != best_t_instance:
-            self.add_kv_cache_transfer(request,
-                                       best_p_instance,
-                                       best_t_instance,
-                                       self.transfer_bandwidth)
-            best_p_instance.sched_memory += prompt_task.max_memory(best_p_instance)
-            best_t_instance.sched_memory += (prompt_task.max_memory(best_t_instance) + 
-                                             token_task.max_memory(best_t_instance))
-        else:
-            prompt_task.instance = best_p_instance
-            token_task.instance = best_t_instance
-            prompt_task.chain = [token_task]
-            
-            total_req = prompt_task.max_memory(best_p_instance) + token_task.max_memory(best_t_instance)
-            best_p_instance.sched_memory += total_req
-
-        best_p_instance.sched_pending_tokens += prompt_task.prompt_size
-        best_t_instance.sched_pending_tokens += 1
-        
-        # 返回 True 表示调度成功
-        return True
-    """
     Fluid Scheduler:
-    1. Removes strict distinctions between Prompt and Token pools. 
+    1. Removes strict distinctions between Prompt and Token pools.
        All instances are treated as Unified Workers.
     2. Decisions are made per-request based on a Cost Model:
        Cost = ExecutionTime + QueueWait + TransferLatency + InterferencePenalty
@@ -1974,8 +1591,8 @@ class UnifiedFluidScheduler(KVScheduler):
                  prompt_processors,
                  token_processors,
                  transfer_bandwidth,
-                 interference_penalty=0.2, # 20% slowdown if mixing P and T
-                 enable_pipelining=True,   # If True, assumes computation overlaps transfer
+                 interference_penalty=0.2,  # 20% slowdown if mixing P and T
+                 enable_pipelining=True,  # If True, assumes computation overlaps transfer
                  debug=False):
         super().__init__(application,
                          router,
@@ -1984,12 +1601,12 @@ class UnifiedFluidScheduler(KVScheduler):
                          prompt_processors,
                          token_processors,
                          debug)
-        
+
         # Unified pool: We don't care about tags anymore.
         # But we merge them to track all available resources.
-        self.unified_instances = [] 
-        self.transfer_bandwidth = transfer_bandwidth * 1024**3 # GB/s -> B/s
-        
+        self.unified_instances = []
+        self.transfer_bandwidth = transfer_bandwidth * 1024 ** 3  # GB/s -> B/s
+
         # Model Parameters
         self.interference_penalty = interference_penalty
         self.enable_pipelining = enable_pipelining
@@ -1997,7 +1614,7 @@ class UnifiedFluidScheduler(KVScheduler):
     def add_instance(self, instance):
         # Override parent method to simply add to the unified list
         super().add_instance(instance)
-        # We assume all hardware is capable of doing both, 
+        # We assume all hardware is capable of doing both,
         # or at least the Scheduler treats them as potential candidates.
         if instance not in self.unified_instances:
             self.unified_instances.append(instance)
@@ -2005,50 +1622,50 @@ class UnifiedFluidScheduler(KVScheduler):
     def estimate_compute_time(self, task, instance):
         """
         Estimate P-phase or T-phase execution time.
-        In a real scenario, this uses a Profiler. 
+        In a real scenario, this uses a Profiler.
         Here we simplify using the model's iteration logic.
         """
         # This is a heuristic proxy.
         # Ideally, use instance.get_duration(task) if accessible without running.
         # Here we assume homogenous compute roughly, scaling by prompt size.
         if task.task_type == "prompt":
-            return task.prompt_size * 0.0005 # Hypothetical coefficient
+            return task.prompt_size * 0.0005  # Hypothetical coefficient
         else:
-            return 1 * 0.001 # Decoding one token takes longer relative to prefill/token
+            return 1 * 0.001  # Decoding one token takes longer relative to prefill/token
 
     def calculate_cost(self, p_node, t_node, request, prompt_task, token_task):
         """
         Core logic: Calculate the 'Virtual Cost' of a path.
         """
-        
+
         # 1. Base Wait Cost (Load Balancing)
         # Use queue length as a proxy for wait time
-        wait_cost_p = len(p_node.pending_requests) * 0.01 
+        wait_cost_p = len(p_node.pending_requests) * 0.01
         wait_cost_t = len(t_node.pending_requests) * 0.01
 
         # 2. Transfer Cost (Communication)
         transfer_cost = 0
         kv_size = request.estimate_kv_cache_size(prompt_task.prompt_size, p_node.model)
-        
+
         if p_node != t_node:
             raw_transfer_time = kv_size / self.transfer_bandwidth
-            
+
             if self.enable_pipelining:
                 # If pipelined, transfer is hidden behind compute (or vice-versa)
                 # Cost is max(compute, transfer) - compute [overhead only]
                 # For simplicity in cost function, we penalize only the non-overlapped part.
                 # Here we conservatively add a fraction of transfer time as latency overhead.
-                transfer_cost = raw_transfer_time * 0.1 # Optimistic overlap
+                transfer_cost = raw_transfer_time * 0.1  # Optimistic overlap
             else:
                 transfer_cost = raw_transfer_time
 
         # 3. Interference Cost (Mixing Penalty)
-        # If the P-Node is already serving T-tasks (acting as a T-node), 
+        # If the P-Node is already serving T-tasks (acting as a T-node),
         # adding a P-task introduces contention (Cache trashing, bandwidth contention).
         interference_cost = 0
         if p_node == t_node:
             # Check if this node is "heavy" with decoding
-            if p_node.sched_pending_tokens > 10: # Threshold for "Active T Node"
+            if p_node.sched_pending_tokens > 10:  # Threshold for "Active T Node"
                 # The P task will slow down existing T tasks, and run slower itself.
                 estimated_p_time = self.estimate_compute_time(prompt_task, p_node)
                 interference_cost = estimated_p_time * self.interference_penalty
@@ -2058,19 +1675,14 @@ class UnifiedFluidScheduler(KVScheduler):
         return total_cost
 
     def check_memory_feasibility(self, instance, new_memory_demand):
-        """
-        Check if instance has enough space. 
-        Critical for preventing Deadlock.
-        """
-        # sched_memory tracks the reserved memory for scheduled (but maybe not running) tasks
+        """检查是否有足够的未来显存，防止死锁的关键"""
         available = instance.max_memory - instance.sched_memory
         return available >= new_memory_demand
 
     def schedule(self, request, *args, **kwargs):
         """
-        Schedule logic:
-        Iterate O(N^2) pairs of (P_Node, T_Node) to find the minimum Cost path.
-        N is typically small (number of GPU nodes), so this is fast.
+        Modified schedule:
+        Returns True if scheduled successfully, False if backpressured (no memory).
         """
         if len(self.unified_instances) == 0:
             raise ValueError("No instances available")
@@ -2081,84 +1693,136 @@ class UnifiedFluidScheduler(KVScheduler):
         best_cost = float('inf')
         best_p_instance = None
         best_t_instance = None
-        
-        # Filter: Only candidates that have memory for at least P-computation (if strictly separate)
-        # But usually P-memory is temporary if transferred.
-        # We simplify: we need P-memory on P-node (temp) and T-memory on T-node (long-term).
-        
-        # Heuristic: Shuffle to avoid fixed-order bias
+
+        # 为了避免所有任务都按照固定的列表顺序抢占第一个机器，打乱顺序
         candidates = np.random.permutation(self.unified_instances)
 
-        # --- Phase 1: Search for Best Path ---
+        # --- Phase 1: 寻找最佳路径 (O(N^2) search) ---
         for p_cand in candidates:
-            # 1. Check P-Node Admission (Does it have temp memory for P?)
-            # Prompt memory: Model weights (fixed) + KV (temporary generated)
+            # 1. 检查 P 节点准入 (临时显存)
             p_mem_req = prompt_task.max_memory(p_cand)
             if not self.check_memory_feasibility(p_cand, p_mem_req):
-                continue 
+                continue
 
             for t_cand in candidates:
-                # 2. Check T-Node Reservation (Does it have long-term memory for KV?)
-                # This is the "Admission Control" preventing OOM/Deadlock.
-                # If Local (p=t), check combined requirement.
+                # 2. 检查 T 节点准入 (长期 KV 显存)
                 if p_cand == t_cand:
                     total_mem_req = p_mem_req + token_task.max_memory(t_cand)
                     if not self.check_memory_feasibility(t_cand, total_mem_req):
                         continue
                 else:
-                    # Remote: Only need T requirement on T node
-                    t_mem_req = p_mem_req + token_task.max_memory(t_cand) 
-                    # Note: usually T needs the KV size. max_memory() usually includes KV estimation.
+                    t_mem_req = p_mem_req + token_task.max_memory(t_cand)
                     if not self.check_memory_feasibility(t_cand, t_mem_req):
                         continue
 
-                # 3. Calculate Score
+                # 3. 计算成本 (排队 + 传输 + 混合干扰)
                 cost = self.calculate_cost(p_cand, t_cand, request, prompt_task, token_task)
-                
+
                 if cost < best_cost:
                     best_cost = cost
                     best_p_instance = p_cand
                     best_t_instance = t_cand
 
-        # --- Phase 2: Action or Wait ---
+        # --- Phase 2: 准入控制 / 反压 (Backpressure) ---
         if best_p_instance is None or best_t_instance is None:
-            # NO feasible path found (all full).
-            # DO NOT schedule. Leave in pending_queue. 
-            # This is "Backpressure". 
-            # By not scheduling, we avoid creating tasks that stall or crash.
-            return
+            # 没有任何节点组合能满足显存需求
+            # 返回 False，告诉 run_request 暂停该请求
+            if self.debug:
+                print(f"[Backpressure] Req {request.request_id} stalled. Cluster full.")
+            return False
 
-        # --- Phase 3: Execute Assignment ---
-        
-        # 1. If Remote, Inject Transfer Task
+        # --- Phase 3: 执行调度 ---
+
+        # 设置实例 (这修复了 NoneType 报错，因为只在成功时设置)
         if best_p_instance != best_t_instance:
+            # 跨节点：插入传输流
             self.add_kv_cache_transfer(request,
                                        best_p_instance,
                                        best_t_instance,
                                        self.transfer_bandwidth)
-            # Reserve Memory
-            # P-Node reserves P-memory (Temporary, released after transfer theoretically, 
-            # but simulator logic usually holds it until task done)
+            # 显存记账
             best_p_instance.sched_memory += prompt_task.max_memory(best_p_instance)
-            # T-Node reserves Memory NOW (Reservation)
-            best_t_instance.sched_memory += (prompt_task.max_memory(best_t_instance) + 
+            best_t_instance.sched_memory += (prompt_task.max_memory(best_t_instance) +
                                              token_task.max_memory(best_t_instance))
         else:
-            # Local Execution
+            # 本地：就地执行
             prompt_task.instance = best_p_instance
             token_task.instance = best_t_instance
-            # Enable chaining to minimize overhead
             prompt_task.chain = [token_task]
-            
-            # Reserve Memory (Combined)
+            # 显存记账
             total_req = prompt_task.max_memory(best_p_instance) + token_task.max_memory(best_t_instance)
             best_p_instance.sched_memory += total_req
 
-        # Bookkeeping for load balancing (metrics)
+        # 负载均衡计数器
         best_p_instance.sched_pending_tokens += prompt_task.prompt_size
         best_t_instance.sched_pending_tokens += 1
-        
-        # Debug Log
-        if self.debug:
-            action_type = "Local" if best_p_instance == best_t_instance else "Remote"
-            print(f"[FluidSched] Req {request.request_id}: {action_type} | P->{best_p_instance.instance_id} T->{best_t_instance.instance_id} Cost:{best_cost:.4f}")
+
+        return True  # 调度成功
+
+    def run_request(self, request):
+        """
+        重写 run_request 以支持调度失败的情况。
+        这是由 NoOpRouter 触发的入口点。
+        """
+        # 1. 尝试调度
+        is_scheduled = self.schedule(request)
+
+        if is_scheduled:
+            # --- 成功路径 ---
+            # 只有调度成功了，Instance 被赋值了，才运行后续逻辑
+            request.run_on_executor()
+
+            # 记录调度开销 (保持原有逻辑)
+            # ... (如果有时间测量的代码放在这) ...
+
+            self.spawn_executor(self.executor_type, request)
+
+            # 只要在队列里就移除 (如果请求是刚来的，可能还没在队列里，所以要check)
+            if request in self.pending_queue:
+                self.pending_queue.remove(request)
+
+            self.executing_queue.append(request)
+        else:
+            # --- 失败路径 (显存满) ---
+            # 1. 确保请求在 pending_queue 里
+            if request not in self.pending_queue:
+                self.pending_queue.append(request)
+
+            # 2. 什么都不做，直接返回。
+            # 请求会留在 pending_queue 中，等待其他请求完成后触发重试。
+            pass
+
+    def request_completion(self, request):
+        """
+        当一个任务完成时，它会释放显存。
+        这是唤醒被反压暂停的任务的关键时刻。
+        """
+        # 1. 标准完成逻辑 (释放资源、记录数据等)
+        super().request_completion(request)
+
+        # 2. 显存已释放，尝试处理积压的等待队列
+        # 使用 While 循环尝试尽可能多地放入排队的任务
+        if len(self.pending_queue) > 0:
+            # 这是一个简单的重试逻辑。
+            # 注意：在复杂的事件循环中，如果 pending_queue 很长，
+            # 递归调用 run_request 可能会有问题，但通常 simulation 深度不深。
+            # 这里我们只尝试唤醒队头 (FIFO)，避免饥饿。
+
+            # 取出队头，但先不 pop，因为不确定能否调度成功
+            retry_request = self.pending_queue[0]
+
+            # 尝试再次运行
+            # 如果成功，run_request 内部会把它从 pending_queue remove 掉
+            # 如果失败，它依然在 queue 里，我们停止重试循环
+            is_scheduled = self.schedule(retry_request)
+
+            if is_scheduled:
+                retry_request.run_on_executor()
+                self.spawn_executor(self.executor_type, retry_request)
+                self.pending_queue.pop(0)  # 移除队头
+                self.executing_queue.append(retry_request)
+
+                # 如果成功了一个，可以尝试递归查看下一个 (贪心填充)
+                # self.request_completion(None) # 这种递归需要小心，简单起见先不加
+
+
