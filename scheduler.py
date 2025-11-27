@@ -1638,41 +1638,43 @@ class UnifiedFluidScheduler(KVScheduler):
         Core logic: Calculate the 'Virtual Cost' of a path.
         """
 
-        # 1. Base Wait Cost (Load Balancing)
-        # Use queue length as a proxy for wait time
+        # 1. 基础等待成本 (Load Balancing)
         wait_cost_p = len(p_node.pending_requests) * 0.01
         wait_cost_t = len(t_node.pending_requests) * 0.01
 
-        # 2. Transfer Cost (Communication)
+        # 2. 传输成本
         transfer_cost = 0
-        kv_size = request.estimate_kv_cache_size(prompt_task.prompt_size, p_node.model)
-
         if p_node != t_node:
-            raw_transfer_time = kv_size / self.transfer_bandwidth
+            kv_size = request.estimate_kv_cache_size(prompt_task.prompt_size, p_node.model)
+            # 在仿真里，物理传输很快，overlap假设也很快
+            transfer_cost = (kv_size / self.transfer_bandwidth) * 0.5
+            # 调小这个系数！让调度器更愿意传输 (更像 Splitwise)
 
-            if self.enable_pipelining:
-                # If pipelined, transfer is hidden behind compute (or vice-versa)
-                # Cost is max(compute, transfer) - compute [overhead only]
-                # For simplicity in cost function, we penalize only the non-overlapped part.
-                # Here we conservatively add a fraction of transfer time as latency overhead.
-                transfer_cost = raw_transfer_time * 0.1  # Optimistic overlap
-            else:
-                transfer_cost = raw_transfer_time
-
-        # 3. Interference Cost (Mixing Penalty)
-        # If the P-Node is already serving T-tasks (acting as a T-node),
-        # adding a P-task introduces contention (Cache trashing, bandwidth contention).
+        # 3. 干扰成本 (关键优化点！！！)
         interference_cost = 0
-        if p_node == t_node:
-            # Check if this node is "heavy" with decoding
-            if p_node.sched_pending_tokens > 10:  # Threshold for "Active T Node"
-                # The P task will slow down existing T tasks, and run slower itself.
-                estimated_p_time = self.estimate_compute_time(prompt_task, p_node)
-                interference_cost = estimated_p_time * self.interference_penalty
 
-        # Total Cost Function
-        total_cost = wait_cost_p + wait_cost_t + transfer_cost + interference_cost
-        return total_cost
+        # 判断 t_node 是否正在高强度 decoding
+        is_t_busy = t_node.sched_pending_tokens > 0
+
+        if p_node == t_node and is_t_busy:
+            # 如果该节点已经在跑 T 任务，再塞进一个 P 任务
+            # 我们要给一个巨大的惩罚，哪怕它看起来空闲
+
+            # 动态干扰因子：
+            # 如果负载低 (pending queue 小)，我们严厉禁止混合 (高 Cost)
+            # 如果负载高 (到处都在排队)，我们不得不混合 (降低 Cost)
+
+            cluster_load_factor = len(p_node.pending_requests) / 20.0  # 假设 20 是阈值
+
+            # 低负载下 Penalty 极大 (100)，迫使系统走分离路径
+            # 高负载下 Penalty 变小 (允许混合以消化堆积的队列)
+            base_penalty = 1000.0 if cluster_load_factor < 0.5 else 0.5
+
+            estimated_p_time = self.estimate_compute_time(prompt_task, p_node)
+            interference_cost = estimated_p_time * base_penalty
+
+        # Total Cost
+        return wait_cost_p + wait_cost_t + transfer_cost + interference_cost
 
     def check_memory_feasibility(self, instance, new_memory_demand):
         """检查是否有足够的未来显存，防止死锁的关键"""
