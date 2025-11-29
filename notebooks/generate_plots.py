@@ -19,8 +19,10 @@ plt.rcParams.update({
 })
 
 results_dir = "../results"
-plots_dir = "../plots/Unified"
+plots_dir = "../plots/Unified/"
 perf_model_path = "../data/perf_model.csv"
+os.makedirs(plots_dir, exist_ok=True)
+
 
 def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
     """
@@ -127,7 +129,8 @@ def plot_y_vs_trace_new(results_df,
                        y_vars=["ttft_times", "tbt_times", "e2e_times"],
                        y_vars_labels=["TTFT", "TBT", "E2E"],
                        quantiles=[0.5, 0.9, 0.99],
-                       title=None):
+                       title=None,
+                       save_path=None):
     """
     Create plots showing performance metrics vs trace/load.
     """
@@ -179,13 +182,15 @@ def plot_y_vs_trace_new(results_df,
     plt.margins(x=0)
     # Set 300dpi
     plt.gcf().set_dpi(300)
+    plt.savefig(save_path+"-TTFT.png", bbox_inches='tight')
 
 def plot_additional_metrics(results_df,
                            traces,
                            y_vars=["nth_token_overheads", "queue_times"],
                            y_vars_labels=["Nth Token Overheads", "Queue Times"],
                            quantiles=[0.5, 0.9, 0.99],
-                           title=None):
+                           title=None,
+                           save_path=None):
     """
     Create plots for additional metrics like nth_token_overheads and queue_times.
     """
@@ -234,6 +239,8 @@ def plot_additional_metrics(results_df,
     plt.margins(x=0)
     # Set 300dpi
     plt.gcf().set_dpi(300)
+    plt.savefig(save_path+".png", bbox_inches='tight')
+    
 
 def main():
     """
@@ -259,10 +266,12 @@ def main():
     # Define traces for different loads (rr_code_x where x varies)
     traces_index = 0
     traces_name =['conv','code']
-    traces = [f"rr_{traces_name[traces_index]}_{i}" for i in range(30, 160, 10)]  # Example range
+    traces = [f"rr_{traces_name[traces_index]}_{i}" for i in range(30, 250, 10)]  # Example range
     
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")
+    
+    name = traces_name[traces_index]+configs[0]["scheduler"]+"Unified"
     
     # Generate plots for slowdown metrics
     plot_y_vs_trace_new(
@@ -270,13 +279,10 @@ def main():
         traces,
         y_vars=["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"],
         y_vars_labels=["TTFT", "TBT", "E2E"],
-        title=None
+        title=None,
+        save_path=plots_dir+name
     )
     
-    # Save plot
-    os.makedirs(plots_dir, exist_ok=True)
-    name = traces_name[traces_index]+configs[0]["scheduler"]+"Unified"
-    plt.savefig(f"{plots_dir}/{name}-TTFT.png", bbox_inches='tight')
     
     # Generate plots for additional metrics (nth_token_overheads and queue_times)
     plot_additional_metrics(
@@ -284,12 +290,10 @@ def main():
         traces,
         y_vars=["nth_token_overheads", "queue_times"],
         y_vars_labels=["Nth Token Overheads", "Queue Times"],
-        title=None
+        title=None,
+        save_path=plots_dir+name
     )
     
-    # Save additional metrics plot
-    plt.savefig(f"{plots_dir}/{name}.png", bbox_inches='tight')
-    # plt.show()
 
 if __name__ == "__main__":
     main()

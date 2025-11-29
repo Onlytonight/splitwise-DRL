@@ -1,11 +1,12 @@
 TRACE_code=rr_code_30,rr_code_40,rr_code_50,rr_code_60,rr_code_70,rr_code_80,rr_code_90,rr_code_100,rr_code_110,rr_code_120,rr_code_130,rr_code_140
-# ,rr_code_150,rr_code_160,rr_conv_170,rr_conv_180
+# ,rr_code_150,rr_code_160
 TRACE_conv=rr_conv_30,rr_conv_40,rr_conv_50,rr_conv_60,rr_conv_70,rr_conv_80,rr_conv_90,rr_conv_100,rr_conv_110,rr_conv_120,rr_conv_130,rr_conv_140,rr_conv_150
-# ,rr_conv_160,rr_conv_170,rr_conv_180
+,rr_conv_160,rr_conv_170,rr_conv_180,rr_conv_190,rr_conv_200
+# ,rr_conv_210,rr_conv_220,rr_conv_230,rr_conv_240,rr_conv_250
 SEED=0
-
+# Unified_pool adaptive_pool
 python run.py --multirun\
-    applications.0.scheduler=Unified_pool \
+    applications.0.scheduler=adaptive_pool \
     cluster=half_half \
     cluster.servers.0.count=0 \
     cluster.servers.1.count=40 \

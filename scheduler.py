@@ -737,6 +737,74 @@ class MixedPoolScheduler(KVScheduler):
         token_instance.sched_pending_tokens += 1
         print("prompt instance num is", len(self.prompt_instances), ",token instance num is",
               len(self.token_instances), "mixed instance num is", len(self.mixed_instances))
+        
+    # def run_request(self, request):
+    #     """
+    #     重写 run_request 以支持调度失败的情况。
+    #     这是由 NoOpRouter 触发的入口点。
+    #     """
+    #     # 1. 尝试调度
+    #     is_scheduled = self.schedule(request)
+
+    #     if is_scheduled:
+    #         # --- 成功路径 ---
+    #         # 只有调度成功了，Instance 被赋值了，才运行后续逻辑
+    #         request.run_on_executor()
+
+    #         # 记录调度开销 (保持原有逻辑)
+    #         # ... (如果有时间测量的代码放在这) ...
+
+    #         self.spawn_executor(self.executor_type, request)
+
+    #         # 只要在队列里就移除 (如果请求是刚来的，可能还没在队列里，所以要check)
+    #         if request in self.pending_queue:
+    #             self.pending_queue.remove(request)
+
+    #         self.executing_queue.append(request)
+    #     else:
+    #         # --- 失败路径 (显存满) ---
+    #         # 1. 确保请求在 pending_queue 里
+    #         if request not in self.pending_queue:
+    #             self.pending_queue.append(request)
+
+    #         # 2. 什么都不做，直接返回。
+    #         # 请求会留在 pending_queue 中，等待其他请求完成后触发重试。
+    #         pass
+        
+    # def request_completion(self, request):
+    #     """
+    #     当一个任务完成时，它会释放显存。
+    #     这是唤醒被反压暂停的任务的关键时刻。
+    #     """
+    #     # 1. 标准完成逻辑 (释放资源、记录数据等)
+    #     super().request_completion(request)
+
+    #     # 2. 显存已释放，尝试处理积压的等待队列
+    #     # 使用 While 循环尝试尽可能多地放入排队的任务
+    #     if len(self.pending_queue) > 0:
+    #         # 这是一个简单的重试逻辑。
+    #         # 注意：在复杂的事件循环中，如果 pending_queue 很长，
+    #         # 递归调用 run_request 可能会有问题，但通常 simulation 深度不深。
+    #         # 这里我们只尝试唤醒队头 (FIFO)，避免饥饿。
+
+    #         # 取出队头，但先不 pop，因为不确定能否调度成功
+    #         retry_request = self.pending_queue[0]
+
+    #         # 尝试再次运行
+    #         # 如果成功，run_request 内部会把它从 pending_queue remove 掉
+    #         # 如果失败，它依然在 queue 里，我们停止重试循环
+    #         is_scheduled = self.schedule(retry_request)
+
+    #         if is_scheduled:
+    #             retry_request.run_on_executor()
+    #             self.spawn_executor(self.executor_type, retry_request)
+    #             self.pending_queue.pop(0)  # 移除队头
+    #             self.executing_queue.append(retry_request)
+
+    #             # 如果成功了一个，可以尝试递归查看下一个 (贪心填充)
+    #             # self.request_completion(None) # 这种递归需要小心，简单起见先不加
+
+
 
 
 class AdaptiveMixedPoolScheduler(KVScheduler):
@@ -1191,6 +1259,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         # 如果没有新完成的请求，返回0
         return 0, 0, 0, 0
 
+
 class LyapunovScheduler(MixedPoolScheduler):
     """
     Lyapunov-based Scheduler that minimizes Drift-plus-Penalty.
@@ -1571,8 +1640,6 @@ class SeparateMixedScheduler(KVScheduler):
         token_instance.sched_pending_tokens += 1
 
 
-
-
 class UnifiedFluidScheduler(KVScheduler):
     """
     Fluid Scheduler:
@@ -1633,48 +1700,77 @@ class UnifiedFluidScheduler(KVScheduler):
         else:
             return 1 * 0.001  # Decoding one token takes longer relative to prefill/token
 
+    def instance_task_type(self,instance):
+        has_prompt = False
+        has_token = False
+        
+        # Check pending queue
+        for task in instance.pending_queue:
+            if isinstance(task, PromptTask):
+                has_prompt = True
+            elif isinstance(task, TokenTask):
+                has_token = True
+        
+        # Check executing batch
+        for task in instance.batch:
+            if isinstance(task, PromptTask):
+                has_prompt = True
+            elif isinstance(task, TokenTask):
+                has_token = True
+        return has_prompt,has_token
+
+            
     def calculate_cost(self, p_node, t_node, request, prompt_task, token_task):
         """
         Core logic: Calculate the 'Virtual Cost' of a path.
         """
 
-        # 1. 基础等待成本 (Load Balancing)
+        # 1. Base Wait Cost (Load Balancing)
+        # Use queue length as a proxy for wait time
         wait_cost_p = len(p_node.pending_requests) * 0.01
         wait_cost_t = len(t_node.pending_requests) * 0.01
 
-        # 2. 传输成本
+        # 2. Transfer Cost (Communication)
         transfer_cost = 0
+        kv_size = request.estimate_kv_cache_size(prompt_task.prompt_size, p_node.model)
+
         if p_node != t_node:
-            kv_size = request.estimate_kv_cache_size(prompt_task.prompt_size, p_node.model)
-            # 在仿真里，物理传输很快，overlap假设也很快
-            transfer_cost = (kv_size / self.transfer_bandwidth) * 0.5
-            # 调小这个系数！让调度器更愿意传输 (更像 Splitwise)
+            raw_transfer_time = kv_size / self.transfer_bandwidth
 
-        # 3. 干扰成本 (关键优化点！！！)
+            if self.enable_pipelining:
+                # If pipelined, transfer is hidden behind compute (or vice-versa)
+                # Cost is max(compute, transfer) - compute [overhead only]
+                # For simplicity in cost function, we penalize only the non-overlapped part.
+                # Here we conservatively add a fraction of transfer time as latency overhead.
+                transfer_cost = raw_transfer_time * 0.1  # Optimistic overlap
+            else:
+                transfer_cost = raw_transfer_time
+
+        # 3. Interference Cost (Mixing Penalty)
+        # If the P-Node is already serving T-tasks (acting as a T-node),
+        # adding a P-task introduces contention (Cache trashing, bandwidth contention).
         interference_cost = 0
+        # if p_node == t_node:
+        #     # Check if this node is "heavy" with decoding
+        #     if p_node.sched_pending_tokens > 10:  # Threshold for "Active T Node"
+        #         # The P task will slow down existing T tasks, and run slower itself.
+        #         estimated_p_time = self.estimate_compute_time(prompt_task, p_node)
+        #         interference_cost = estimated_p_time * self.interference_penalty
+        _,has_t = self.instance_task_type(p_node)
+        if has_t:
+            interference_cost += prompt_task.prompt_size * 0.0005 * (1+self.interference_penalty)
+        else:
+            interference_cost += prompt_task.prompt_size * 0.0005 
+        has_p,_ = self.instance_task_type(t_node)
+        if has_p:
+            interference_cost += 0.001 * (1+self.interference_penalty)
+        else:
+            interference_cost += 0.001
 
-        # 判断 t_node 是否正在高强度 decoding
-        is_t_busy = t_node.sched_pending_tokens > 0
-
-        if p_node == t_node and is_t_busy:
-            # 如果该节点已经在跑 T 任务，再塞进一个 P 任务
-            # 我们要给一个巨大的惩罚，哪怕它看起来空闲
-
-            # 动态干扰因子：
-            # 如果负载低 (pending queue 小)，我们严厉禁止混合 (高 Cost)
-            # 如果负载高 (到处都在排队)，我们不得不混合 (降低 Cost)
-
-            cluster_load_factor = len(p_node.pending_requests) / 20.0  # 假设 20 是阈值
-
-            # 低负载下 Penalty 极大 (100)，迫使系统走分离路径
-            # 高负载下 Penalty 变小 (允许混合以消化堆积的队列)
-            base_penalty = 1000.0 if cluster_load_factor < 0.5 else 0.5
-
-            estimated_p_time = self.estimate_compute_time(prompt_task, p_node)
-            interference_cost = estimated_p_time * base_penalty
-
-        # Total Cost
-        return wait_cost_p + wait_cost_t + transfer_cost + interference_cost
+        # Total Cost Function
+        total_cost = wait_cost_p + wait_cost_t + transfer_cost + interference_cost
+        return total_cost
+# 增加轻载时pt专用化
 
     def check_memory_feasibility(self, instance, new_memory_demand):
         """检查是否有足够的未来显存，防止死锁的关键"""
