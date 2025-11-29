@@ -256,36 +256,36 @@ def download_azure_llm_traces():
 
 if __name__ == "__main__":
     # download prompt and token size distributions
-    download_azure_llm_traces()
-
-    # generate request traces
-    generate_code_traces(
-        max_requests=1000000,
-        end_time=600,
-        request_rates=list(range(30, 251, 10)),
-        code_distributions_file="data/code_distributions.csv")
-    print("Generated code traces")
+    # download_azure_llm_traces()
+    #
+    # # generate request traces
+    # generate_code_traces(
+    #     max_requests=1000000,
+    #     end_time=600,
+    #     request_rates=list(range(30, 251, 10)),
+    #     code_distributions_file="data/code_distributions.csv")
+    # print("Generated code traces")
 
     generate_conv_traces(
         max_requests=1000000,
         end_time=600,
-        request_rates=list(range(30, 251, 10)),
+        request_rates=list(range(260, 501, 10)),
         conv_distributions_file="data/conv_distributions.csv")
     print("Generated conv traces")
 
     # generate request traces for 2 min
-    generate_code_traces(
-        max_requests=1000000,
-        end_time=120,
-        request_rates=list(range(30, 101, 10)),
-        code_distributions_file="data/code_distributions.csv",
-        trace_filename_template="traces/rr_code_{}_2min.csv")
-    print("Generated code 2min traces")
-
-    generate_conv_traces(
-        max_requests=1000000,
-        end_time=120,
-        request_rates=list(range(30, 101, 10)),
-        conv_distributions_file="data/conv_distributions.csv",
-        trace_filename_template="traces/rr_conv_{}_2min.csv")
-    print("Generated conv 2min traces")
+    # generate_code_traces(
+    #     max_requests=1000000,
+    #     end_time=120,
+    #     request_rates=list(range(30, 101, 10)),
+    #     code_distributions_file="data/code_distributions.csv",
+    #     trace_filename_template="traces/rr_code_{}_2min.csv")
+    # print("Generated code 2min traces")
+    #
+    # generate_conv_traces(
+    #     max_requests=1000000,
+    #     end_time=120,
+    #     request_rates=list(range(30, 101, 10)),
+    #     conv_distributions_file="data/conv_distributions.csv",
+    #     trace_filename_template="traces/rr_conv_{}_2min.csv")
+    # print("Generated conv 2min traces")
