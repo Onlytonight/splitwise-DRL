@@ -49,6 +49,11 @@ class GenerativeLLMRequestMetrics(RequestMetrics):
     token_start_timestamp: float = 0.
     token_end_timestamp: float = 0.
     TTFT: float = 0.
+    # 添加新的字段来记录调度失败时间和时间差值
+    first_schedule_failure_timestamp: float = 0.  # 第一次调度失败的时间戳
+    success_schedule_time: float = 0.
+    schedule_failure_duration: float = 0.         # 调度失败到完成的时间差值
+    schedule_success_duration: float = 0.         # 调度成功到完成的时间差值
 
 
 @dataclass(kw_only=True)

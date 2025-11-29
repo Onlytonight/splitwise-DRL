@@ -737,72 +737,7 @@ class MixedPoolScheduler(KVScheduler):
         token_instance.sched_pending_tokens += 1
         print("prompt instance num is", len(self.prompt_instances), ",token instance num is",
               len(self.token_instances), "mixed instance num is", len(self.mixed_instances))
-        
-    # def run_request(self, request):
-    #     """
-    #     重写 run_request 以支持调度失败的情况。
-    #     这是由 NoOpRouter 触发的入口点。
-    #     """
-    #     # 1. 尝试调度
-    #     is_scheduled = self.schedule(request)
 
-    #     if is_scheduled:
-    #         # --- 成功路径 ---
-    #         # 只有调度成功了，Instance 被赋值了，才运行后续逻辑
-    #         request.run_on_executor()
-
-    #         # 记录调度开销 (保持原有逻辑)
-    #         # ... (如果有时间测量的代码放在这) ...
-
-    #         self.spawn_executor(self.executor_type, request)
-
-    #         # 只要在队列里就移除 (如果请求是刚来的，可能还没在队列里，所以要check)
-    #         if request in self.pending_queue:
-    #             self.pending_queue.remove(request)
-
-    #         self.executing_queue.append(request)
-    #     else:
-    #         # --- 失败路径 (显存满) ---
-    #         # 1. 确保请求在 pending_queue 里
-    #         if request not in self.pending_queue:
-    #             self.pending_queue.append(request)
-
-    #         # 2. 什么都不做，直接返回。
-    #         # 请求会留在 pending_queue 中，等待其他请求完成后触发重试。
-    #         pass
-        
-    # def request_completion(self, request):
-    #     """
-    #     当一个任务完成时，它会释放显存。
-    #     这是唤醒被反压暂停的任务的关键时刻。
-    #     """
-    #     # 1. 标准完成逻辑 (释放资源、记录数据等)
-    #     super().request_completion(request)
-
-    #     # 2. 显存已释放，尝试处理积压的等待队列
-    #     # 使用 While 循环尝试尽可能多地放入排队的任务
-    #     if len(self.pending_queue) > 0:
-    #         # 这是一个简单的重试逻辑。
-    #         # 注意：在复杂的事件循环中，如果 pending_queue 很长，
-    #         # 递归调用 run_request 可能会有问题，但通常 simulation 深度不深。
-    #         # 这里我们只尝试唤醒队头 (FIFO)，避免饥饿。
-
-    #         # 取出队头，但先不 pop，因为不确定能否调度成功
-    #         retry_request = self.pending_queue[0]
-
-    #         # 尝试再次运行
-    #         # 如果成功，run_request 内部会把它从 pending_queue remove 掉
-    #         # 如果失败，它依然在 queue 里，我们停止重试循环
-    #         is_scheduled = self.schedule(retry_request)
-
-    #         if is_scheduled:
-    #             retry_request.run_on_executor()
-    #             self.spawn_executor(self.executor_type, retry_request)
-    #             self.pending_queue.pop(0)  # 移除队头
-    #             self.executing_queue.append(retry_request)
-
-    #             # 如果成功了一个，可以尝试递归查看下一个 (贪心填充)
-    #             # self.request_completion(None) # 这种递归需要小心，简单起见先不加
 
 
 
@@ -1677,6 +1612,7 @@ class UnifiedFluidScheduler(KVScheduler):
         # Model Parameters
         self.interference_penalty = interference_penalty
         self.enable_pipelining = enable_pipelining
+        self.retry_pending_queue=[]
 
     def add_instance(self, instance):
         # Override parent method to simply add to the unified list
@@ -1909,7 +1845,7 @@ class UnifiedFluidScheduler(KVScheduler):
                         continue
 
                 # 3. 计算成本 (排队 + 传输 + 混合干扰)
-                cost = self.calculate_cost(p_cand, t_cand, request, prompt_task, token_task)
+                cost = self.calculate_cost_(p_cand, t_cand, request, prompt_task, token_task)
 
                 if cost < best_cost:
                     best_cost = cost
@@ -1957,7 +1893,7 @@ class UnifiedFluidScheduler(KVScheduler):
         重写 run_request 以支持调度失败的情况。
         这是由 NoOpRouter 触发的入口点。
         """
-        # 1. 尝试调度
+        # 1. 第一次尝试调度
         is_scheduled = self.schedule(request)
 
         if is_scheduled:
@@ -1967,23 +1903,28 @@ class UnifiedFluidScheduler(KVScheduler):
 
             # 记录调度开销 (保持原有逻辑)
             # ... (如果有时间测量的代码放在这) ...
+            assert request.metrics.success_schedule_time == 0
+            request.metrics.success_schedule_time = clock()
 
             self.spawn_executor(self.executor_type, request)
-
-            # 只要在队列里就移除 (如果请求是刚来的，可能还没在队列里，所以要check)
-            if request in self.pending_queue:
-                self.pending_queue.remove(request)
 
             self.executing_queue.append(request)
         else:
             # --- 失败路径 (显存满) ---
             # 1. 确保请求在 pending_queue 里
-            if request not in self.pending_queue:
-                self.pending_queue.append(request)
+            if request not in self.retry_pending_queue:
+                self.retry_pending_queue.append(request)
+                if hasattr(request.metrics,
+                           'first_schedule_failure_timestamp') and request.metrics.first_schedule_failure_timestamp == 0:
+                    request.metrics.first_schedule_failure_timestamp = clock()
+            else:
+                raise ValueError("Request already in retry queue")
 
             # 2. 什么都不做，直接返回。
             # 请求会留在 pending_queue 中，等待其他请求完成后触发重试。
             pass
+
+        self.pending_queue.remove(request)
 
     def request_completion(self, request):
         """
@@ -1992,17 +1933,21 @@ class UnifiedFluidScheduler(KVScheduler):
         """
         # 1. 标准完成逻辑 (释放资源、记录数据等)
         super().request_completion(request)
+        assert request.metrics.schedule_failure_duration==0
+        if hasattr(request.metrics,
+                   'first_schedule_failure_timestamp') and request.metrics.first_schedule_failure_timestamp > 0:
+            request.metrics.schedule_failure_duration = clock() - request.metrics.first_schedule_failure_timestamp
 
         # 2. 显存已释放，尝试处理积压的等待队列
         # 使用 While 循环尝试尽可能多地放入排队的任务
-        if len(self.pending_queue) > 0:
+        if len(self.retry_pending_queue) > 0:
             # 这是一个简单的重试逻辑。
             # 注意：在复杂的事件循环中，如果 pending_queue 很长，
             # 递归调用 run_request 可能会有问题，但通常 simulation 深度不深。
             # 这里我们只尝试唤醒队头 (FIFO)，避免饥饿。
 
             # 取出队头，但先不 pop，因为不确定能否调度成功
-            retry_request = self.pending_queue[0]
+            retry_request = self.retry_pending_queue[0]
 
             # 尝试再次运行
             # 如果成功，run_request 内部会把它从 pending_queue remove 掉
@@ -2012,10 +1957,10 @@ class UnifiedFluidScheduler(KVScheduler):
             if is_scheduled:
                 retry_request.run_on_executor()
                 self.spawn_executor(self.executor_type, retry_request)
-                self.pending_queue.pop(0)  # 移除队头
+                self.retry_pending_queue.pop(0)  # 移除队头
                 self.executing_queue.append(retry_request)
 
+                assert request.metrics.success_schedule_time == 0
+                request.metrics.success_schedule_time = clock()
                 # 如果成功了一个，可以尝试递归查看下一个 (贪心填充)
                 # self.request_completion(None) # 这种递归需要小心，简单起见先不加
-
-
