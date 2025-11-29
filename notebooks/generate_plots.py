@@ -266,7 +266,7 @@ def main():
     # Define traces for different loads (rr_code_x where x varies)
     traces_index = 0
     traces_name =['conv','code']
-    traces = [f"rr_{traces_name[traces_index]}_{i}" for i in range(30, 250, 10)]  # Example range
+    traces = [f"rr_{traces_name[traces_index]}_{i}" for i in range(30, 400, 10)]  # Example range
     
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")

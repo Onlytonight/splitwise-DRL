@@ -6,9 +6,9 @@ TRACE_conv=rr_conv_260,rr_conv_270,rr_conv_280,rr_conv_290,rr_conv_300,rr_conv_3
 # rr_conv_260,rr_conv_270,rr_conv_280,rr_conv_290,rr_conv_300,rr_conv_310,rr_conv_320,rr_conv_330,rr_conv_340,rr_conv_350,
 # rr_conv_360,rr_conv_370,rr_conv_380,rr_conv_390,rr_conv_400,rr_conv_410,rr_conv_420,rr_conv_430,rr_conv_440,rr_conv_450,rr_conv_460,rr_conv_470,rr_conv_480,rr_conv_490,rr_conv_500
 SEED=0
-# Unified_pool adaptive_pool mixed_pool
+# Unified_pool adaptive_pool mixed_pool all_mixed_pool
 python run.py --multirun\
-    applications.0.scheduler=adaptive_pool \
+    applications.0.scheduler=Unified_pool \
     cluster=half_half \
     cluster.servers.0.count=0 \
     cluster.servers.1.count=40 \
