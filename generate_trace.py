@@ -256,7 +256,7 @@ def download_azure_llm_traces():
 
 if __name__ == "__main__":
     # download prompt and token size distributions
-    # download_azure_llm_traces()
+    download_azure_llm_traces()
     #
     # # generate request traces
     # generate_code_traces(
@@ -269,7 +269,7 @@ if __name__ == "__main__":
     generate_conv_traces(
         max_requests=1000000,
         end_time=600,
-        request_rates=list(range(260, 501, 10)),
+        request_rates=list(range(1000,1001, 10)),
         conv_distributions_file="data/conv_distributions.csv")
     print("Generated conv traces")
 
