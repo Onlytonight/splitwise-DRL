@@ -15,15 +15,35 @@ class Event:
     """
     Events are scheduled actions in the simulator.
     """
+    # 定义事件状态常量
+    PENDING = "pending"      # 等待执行
+    EXECUTING = "executing"  # 正在执行
+    COMPLETED = "completed"  # 已完成
+    CANCELLED = "cancelled"  # 已取消
+
     def __init__(self, time, action):
         self.time = time
         self.action = action
+        self.status = self.PENDING  # 初始化状态为等待执行
 
     def __str__(self):
-        return f"Event with time {self.time} and action {self.action}"
+        return f"Event with time {self.time}, action {self.action}, status {self.status}"
 
     def __lt__(self, other):
         return self.time < other.time
+
+    def mark_executing(self):
+        """标记事件为正在执行"""
+        self.status = self.EXECUTING
+
+    def mark_completed(self):
+        """标记事件为已完成"""
+        self.status = self.COMPLETED
+
+    def mark_cancelled(self):
+        """标记事件为已取消"""
+        self.status = self.CANCELLED
+
 
 
 class Simulator:
@@ -35,13 +55,14 @@ class Simulator:
         sim = self
         self.time = 0
         self.end_time = end_time
-        self.events = []
-        self.deleted_events = []
+        self.events = []           # 待执行事件队列
+        self.deleted_events = []   # 已删除事件列表
+        self.completed_events = []  # 已完成事件列表
         logging.info("Simulator initialized")
 
         # logger for simulator events
         self.logger = utils.file_logger("simulator")
-        self.logger.info("time,event")
+        self.logger.info("time,event,status")
 
     def schedule(self, delay, action):
         """
@@ -59,7 +80,9 @@ class Simulator:
         """
         Cancel an event.
         """
-        self.deleted_events.append(event)
+        if event:
+            event.mark_cancelled()
+            self.deleted_events.append(event)
 
     def reschedule(self, event, delay):
         """
@@ -78,8 +101,12 @@ class Simulator:
                 self.deleted_events.remove(event)
                 continue
             self.time = event.time
+            event.mark_executing()
             event.action()
-            self.logger.debug(f"{event.time},{event.action}")
+            event.mark_completed()
+            self.completed_events.append(event)
+            self.logger.debug(f"{event.time},{event.action},{event.status}")
+
 
 
 class TraceSimulator(Simulator):

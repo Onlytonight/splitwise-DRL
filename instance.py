@@ -10,7 +10,7 @@ import utils
 from metrics import InstanceMetrics
 from node import NodeState
 from performance_model import get_duration, get_iteration_duration
-from simulator import clock, schedule_event, cancel_event, reschedule_event
+from simulator import clock, schedule_event, cancel_event, reschedule_event,Event
 from task import PromptTask, TokenTask
 
 
@@ -50,7 +50,7 @@ class Instance():
             self.servers.add(processor.server)
             processor.instances.append(self)
         # needed to implement pause and preemption
-        self.completion_events = {}
+        self.completion_events: dict[str, Event] = {}
 
         ## memory management
         self.memory = self.model.size.total_size
@@ -512,7 +512,7 @@ class ORCAInstance(Instance):
         for task in self.batch:
             # 设置任务将要生成的令牌数（等于连续迭代次数）
             task.generating_tokens = self.num_contiguous_iterations
-            
+
             # 根据任务类型设置处理的令牌数
             if isinstance(task, PromptTask):
                 # 提示任务需要处理整个提示长度
@@ -537,40 +537,98 @@ class ORCAInstance(Instance):
                 raise ValueError(f"Unexpected task state {task.state} in start_iteration")
 
         # 安排迭代完成事件，在指定时间后调用complete_iteration方法
+        iteration_total_time = self.iteration_duration * self.num_contiguous_iterations
+
+        # 检查是否已存在迭代事件，如果存在则先取消
+        if "iteration" in self.completion_events and self.completion_events["iteration"]:
+            cancel_event(self.completion_events["iteration"])
+
+        # 安排新的迭代完成事件
         self.completion_events["iteration"] = schedule_event(
-                        self.iteration_duration * self.num_contiguous_iterations,
-                        lambda instance=self: instance.complete_iteration())
+            iteration_total_time,
+            lambda instance=self: instance.complete_iteration())
+
 
     def pause_iteration(self):
         """
-        Pause contiguous iterations at an iteration boundary by resetting the completion event.
-        Used if a task arrives which must be executed in the next iteration (typically prompt).
-        Assumes that all tasks in the batch are token tasks.
+        在迭代边界处暂停连续迭代，通过重置完成事件来实现。
+        当有任务（通常是提示任务）到达并且必须在下一次迭代中执行时使用。
+        假设批次中的所有任务都是令牌任务。
         """
-        if self.pause_next_iteration or len(self.prompt_tasks_in_batch) > 0:
+        # 如果已经设置了下次迭代暂停标志，或者批次中已有提示任务，则直接返回不进行操作
+        if self.pause_next_iteration or len(self.prompt_tasks_in_batch) > 0 :
             return
+
+        # 检查是否存在有效的迭代事件
+        if "iteration" not in self.completion_events or \
+                self.completion_events["iteration"] is None or \
+                self.completion_events["iteration"].status == Event.COMPLETED:
+            return
+
+
+        # 设置暂停标志，表示下次迭代需要暂停
         self.pause_next_iteration = True
 
+        # 计算当前连续迭代的总持续时间
         contiguous_iteration_duration_old = self.iteration_duration * self.num_contiguous_iterations
+        # 计算当前迭代的开始时间
         iteration_start = self.completion_events["iteration"].time - \
                             contiguous_iteration_duration_old
+        # 计算从当前迭代开始到现在经过的时间
         elapsed_time = clock() - iteration_start
-        num_completed_iterations = (clock() - iteration_start) // self.iteration_duration
-        self.num_contiguous_iterations = num_completed_iterations + 1
 
+        # 防止除零错误
+        if self.iteration_duration <= 0:
+            return
+
+        # 计算已经完成的完整迭代次数
+        num_completed_iterations = int((clock() - iteration_start) // self.iteration_duration)
+
+        # 确保至少还有一次迭代需要完成
+        new_contiguous_iterations = max(1, num_completed_iterations + 1)
+
+        # 只有当新的迭代次数确实不同于原来时才进行暂停操作
+        if new_contiguous_iterations == self.num_contiguous_iterations:
+            return
+
+
+        # 更新连续迭代次数为已完成的迭代数加1（即将完成的这次迭代）
+        self.num_contiguous_iterations = num_completed_iterations
+
+
+
+        # 更新批次中每个任务的令牌生成和处理数量
         for task in self.batch:
+            # 设置任务将要生成的令牌数（等于新的连续迭代次数）
             task.generating_tokens = self.num_contiguous_iterations
+
+
+            # 对于令牌任务，设置处理的令牌数等于连续迭代次数
             if isinstance(task, TokenTask):
                 task.processing_tokens = self.num_contiguous_iterations
             else:
                 raise ValueError(f"Unexpected task type {task.task_type} in pause_iteration")
 
-        # reschedule completion event
+        # 重新安排完成事件
+        # 计算新的连续迭代总持续时间
         contiguous_iteration_duration_new = self.iteration_duration * self.num_contiguous_iterations
+
+        # 确保新的总时间不少于已过去的时间
+        contiguous_iteration_duration_new = max(contiguous_iteration_duration_new, elapsed_time)
+
+        # 计算剩余需要的时间（新的总时间减去已经经过的时间）
         remaining_time = contiguous_iteration_duration_new - elapsed_time
 
-        self.completion_events["iteration"] = reschedule_event(
-                            self.completion_events["iteration"], remaining_time)
+        # 确保剩余时间为正值
+        remaining_time = max(0.0, remaining_time)
+
+        # 只有当剩余时间大于一个很小的阈值时才重新调度事件
+        if remaining_time > 1e-4:
+            # 重新调度迭代完成事件，在剩余时间内触发
+            self.completion_events["iteration"] = reschedule_event(
+                self.completion_events["iteration"], remaining_time)
+
+
 
     def complete_iteration(self):
         """
@@ -733,7 +791,6 @@ class SplitwiseInstance(ORCAInstance):
             if len(self.prompt_tasks_in_batch) < len(self.batch) and \
                 batch_prompt_tokens + task.prompt_size <= self.max_batch_tokens:
                 self.preempt_iteration()
-                return
                 return
 
     def preempt_iteration(self):
