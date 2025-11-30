@@ -181,6 +181,12 @@ class Scheduler(ABC):
         token_sizes = [r.token_size for r in self.completed_queue]
         array_results["token_sizes"] = np.array(token_sizes)
 
+        failure_time = [r.metrics.schedule_failure_duration for r in self.completed_queue]
+        array_results["failure_times"] = np.array(failure_time)
+
+        success_time = [r.metrics.schedule_success_duration for r in self.completed_queue]
+        array_results["success_times"] = np.array(success_time)
+
         return array_results
 
 
@@ -1612,7 +1618,6 @@ class UnifiedFluidScheduler(KVScheduler):
         # Model Parameters
         self.interference_penalty = interference_penalty
         self.enable_pipelining = enable_pipelining
-        self.retry_pending_queue=[]
 
     def add_instance(self, instance):
         # Override parent method to simply add to the unified list
@@ -1907,24 +1912,20 @@ class UnifiedFluidScheduler(KVScheduler):
             request.metrics.success_schedule_time = clock()
 
             self.spawn_executor(self.executor_type, request)
-
+            self.pending_queue.remove(request)
             self.executing_queue.append(request)
         else:
             # --- 失败路径 (显存满) ---
             # 1. 确保请求在 pending_queue 里
-            if request not in self.retry_pending_queue:
-                self.retry_pending_queue.append(request)
-                if hasattr(request.metrics,
-                           'first_schedule_failure_timestamp') and request.metrics.first_schedule_failure_timestamp == 0:
-                    request.metrics.first_schedule_failure_timestamp = clock()
-            else:
-                raise ValueError("Request already in retry queue")
-
+            # if request not in self.pending_queue:
+            #     self.pending_queue.append(request)
+            if hasattr(request.metrics,
+                       'first_schedule_failure_timestamp') and request.metrics.first_schedule_failure_timestamp == 0:
+                request.metrics.first_schedule_failure_timestamp = clock()
             # 2. 什么都不做，直接返回。
             # 请求会留在 pending_queue 中，等待其他请求完成后触发重试。
             pass
 
-        self.pending_queue.remove(request)
 
     def request_completion(self, request):
         """
@@ -1937,17 +1938,19 @@ class UnifiedFluidScheduler(KVScheduler):
         if hasattr(request.metrics,
                    'first_schedule_failure_timestamp') and request.metrics.first_schedule_failure_timestamp > 0:
             request.metrics.schedule_failure_duration = clock() - request.metrics.first_schedule_failure_timestamp
+        assert request.metrics.success_schedule_time > 0
+        request.metrics.schedule_success_duration = clock() - request.metrics.success_schedule_time
 
         # 2. 显存已释放，尝试处理积压的等待队列
         # 使用 While 循环尝试尽可能多地放入排队的任务
-        if len(self.retry_pending_queue) > 0:
+        if len(self.pending_queue) > 0:
             # 这是一个简单的重试逻辑。
             # 注意：在复杂的事件循环中，如果 pending_queue 很长，
             # 递归调用 run_request 可能会有问题，但通常 simulation 深度不深。
             # 这里我们只尝试唤醒队头 (FIFO)，避免饥饿。
 
             # 取出队头，但先不 pop，因为不确定能否调度成功
-            retry_request = self.retry_pending_queue[0]
+            retry_request = self.pending_queue[0]
 
             # 尝试再次运行
             # 如果成功，run_request 内部会把它从 pending_queue remove 掉
@@ -1957,10 +1960,10 @@ class UnifiedFluidScheduler(KVScheduler):
             if is_scheduled:
                 retry_request.run_on_executor()
                 self.spawn_executor(self.executor_type, retry_request)
-                self.retry_pending_queue.pop(0)  # 移除队头
+                self.pending_queue.pop(0)  # 移除队头
                 self.executing_queue.append(retry_request)
 
-                assert request.metrics.success_schedule_time == 0
-                request.metrics.success_schedule_time = clock()
+                assert retry_request.metrics.success_schedule_time == 0
+                retry_request.metrics.success_schedule_time = clock()
                 # 如果成功了一个，可以尝试递归查看下一个 (贪心填充)
                 # self.request_completion(None) # 这种递归需要小心，简单起见先不加
