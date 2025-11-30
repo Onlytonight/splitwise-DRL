@@ -181,6 +181,12 @@ class Scheduler(ABC):
         token_sizes = [r.token_size for r in self.completed_queue]
         array_results["token_sizes"] = np.array(token_sizes)
 
+        failure_time = [r.metrics.schedule_failure_duration for r in self.completed_queue]
+        array_results["failure_times"] = np.array(failure_time)
+
+        success_time = [r.metrics.schedule_success_duration for r in self.completed_queue]
+        array_results["success_times"] = np.array(success_time)
+
         return array_results
 
 
@@ -737,72 +743,7 @@ class MixedPoolScheduler(KVScheduler):
         token_instance.sched_pending_tokens += 1
         print("prompt instance num is", len(self.prompt_instances), ",token instance num is",
               len(self.token_instances), "mixed instance num is", len(self.mixed_instances))
-        
-    # def run_request(self, request):
-    #     """
-    #     重写 run_request 以支持调度失败的情况。
-    #     这是由 NoOpRouter 触发的入口点。
-    #     """
-    #     # 1. 尝试调度
-    #     is_scheduled = self.schedule(request)
 
-    #     if is_scheduled:
-    #         # --- 成功路径 ---
-    #         # 只有调度成功了，Instance 被赋值了，才运行后续逻辑
-    #         request.run_on_executor()
-
-    #         # 记录调度开销 (保持原有逻辑)
-    #         # ... (如果有时间测量的代码放在这) ...
-
-    #         self.spawn_executor(self.executor_type, request)
-
-    #         # 只要在队列里就移除 (如果请求是刚来的，可能还没在队列里，所以要check)
-    #         if request in self.pending_queue:
-    #             self.pending_queue.remove(request)
-
-    #         self.executing_queue.append(request)
-    #     else:
-    #         # --- 失败路径 (显存满) ---
-    #         # 1. 确保请求在 pending_queue 里
-    #         if request not in self.pending_queue:
-    #             self.pending_queue.append(request)
-
-    #         # 2. 什么都不做，直接返回。
-    #         # 请求会留在 pending_queue 中，等待其他请求完成后触发重试。
-    #         pass
-        
-    # def request_completion(self, request):
-    #     """
-    #     当一个任务完成时，它会释放显存。
-    #     这是唤醒被反压暂停的任务的关键时刻。
-    #     """
-    #     # 1. 标准完成逻辑 (释放资源、记录数据等)
-    #     super().request_completion(request)
-
-    #     # 2. 显存已释放，尝试处理积压的等待队列
-    #     # 使用 While 循环尝试尽可能多地放入排队的任务
-    #     if len(self.pending_queue) > 0:
-    #         # 这是一个简单的重试逻辑。
-    #         # 注意：在复杂的事件循环中，如果 pending_queue 很长，
-    #         # 递归调用 run_request 可能会有问题，但通常 simulation 深度不深。
-    #         # 这里我们只尝试唤醒队头 (FIFO)，避免饥饿。
-
-    #         # 取出队头，但先不 pop，因为不确定能否调度成功
-    #         retry_request = self.pending_queue[0]
-
-    #         # 尝试再次运行
-    #         # 如果成功，run_request 内部会把它从 pending_queue remove 掉
-    #         # 如果失败，它依然在 queue 里，我们停止重试循环
-    #         is_scheduled = self.schedule(retry_request)
-
-    #         if is_scheduled:
-    #             retry_request.run_on_executor()
-    #             self.spawn_executor(self.executor_type, retry_request)
-    #             self.pending_queue.pop(0)  # 移除队头
-    #             self.executing_queue.append(retry_request)
-
-    #             # 如果成功了一个，可以尝试递归查看下一个 (贪心填充)
-    #             # self.request_completion(None) # 这种递归需要小心，简单起见先不加
 
 
 
@@ -1720,7 +1661,7 @@ class UnifiedFluidScheduler(KVScheduler):
         return has_prompt,has_token
 
             
-    def calculate_cost(self, p_node, t_node, request, prompt_task, token_task):
+    def calculate_cost_(self, p_node, t_node, request, prompt_task, token_task):
         """
         Core logic: Calculate the 'Virtual Cost' of a path.
         """
@@ -1772,6 +1713,101 @@ class UnifiedFluidScheduler(KVScheduler):
         return total_cost
 # 增加轻载时pt专用化
 
+    def calculate_cost(self, p_node, t_node, request, prompt_task, token_task):
+        """
+        Core logic: Calculate the 'Virtual Cost' of a path.
+        优化目标：在显存未满前，尽量让pt任务在不同节点计算
+        """
+
+        # 1. 基础等待成本 (Load Balancing)
+        wait_cost_p = len(p_node.pending_requests) * 0.01
+        wait_cost_t = len(t_node.pending_requests) * 0.01
+
+        # 2. 传输成本
+        transfer_cost = 0
+        if p_node != t_node:
+            kv_size = request.estimate_kv_cache_size(prompt_task.prompt_size, p_node.model)
+            # 在仿真里，物理传输很快，overlap假设也很快
+            transfer_cost = (kv_size / self.transfer_bandwidth) * 0.5
+            # 调小这个系数！让调度器更愿意传输 (更像 Splitwise)
+
+        # 3. 干扰成本 (关键优化点！！！)
+        interference_cost = 0
+
+        # 判断 t_node 是否正在高强度 decoding
+        is_t_busy = t_node.sched_pending_tokens > 0
+
+        # 计算节点的内存使用比率
+        p_memory_ratio = p_node.sched_memory / p_node.max_memory
+        t_memory_ratio = t_node.sched_memory / t_node.max_memory
+
+        # 计算新任务添加后的预期内存使用
+        p_new_memory = p_node.sched_memory + prompt_task.max_memory(p_node)
+        t_new_memory = t_node.sched_memory + token_task.max_memory(t_node)
+        if p_node == t_node:
+            # 如果pt在同一节点，需要加上两者的内存
+            t_new_memory = p_node.sched_memory + prompt_task.max_memory(p_node) + token_task.max_memory(p_node)
+
+        p_new_memory_ratio = p_new_memory / p_node.max_memory
+        t_new_memory_ratio = t_new_memory / t_node.max_memory
+
+        if p_node == t_node:
+            # pt任务在同一节点的情况
+            # 根据内存使用情况动态调整惩罚因子
+            # 内存使用率越高，惩罚越大
+            memory_penalty = 1.0
+            if p_new_memory_ratio < 0.7:
+                # 内存充足时，强烈鼓励分离
+                memory_penalty = 1000.0
+            elif p_new_memory_ratio < 0.85:
+                # 内存中等负载时，中度鼓励分离
+                memory_penalty = 100.0
+            elif p_new_memory_ratio < 0.95:
+                # 内存较高负载时，轻微鼓励分离
+                memory_penalty = 10.0
+            else:
+                # 内存接近满载时，允许混合以避免死锁
+                memory_penalty = 0.5
+
+            # 基础干扰惩罚
+            base_penalty = memory_penalty
+
+            # 如果节点已经在运行T任务，再增加惩罚
+            if is_t_busy:
+                # 动态干扰因子：
+                # 如果负载低 (pending queue 小)，我们严厉禁止混合 (高 Cost)
+                # 如果负载高 (到处都在排队)，我们不得不混合 (降低 Cost)
+                cluster_load_factor = len(p_node.pending_requests) / 20.0  # 假设 20 是阈值
+
+                # 调整惩罚因子
+                if cluster_load_factor < 0.5:
+                    base_penalty *= 2.0  # 低负载时进一步增加惩罚
+                else:
+                    base_penalty *= 0.5  # 高负载时降低惩罚
+
+            estimated_p_time = self.estimate_compute_time(prompt_task, p_node)
+            interference_cost = estimated_p_time * base_penalty
+        else:
+            # pt任务在不同节点的情况
+            # 为了平衡节点间的内存使用，对内存使用率差异较大的组合给予奖励
+            memory_balance_reward = 0
+            if abs(p_memory_ratio - t_memory_ratio) > 0.3:
+                # 如果两节点内存使用率差异超过30%，给予奖励（降低成本）
+                memory_balance_reward = -0.1 * abs(p_memory_ratio - t_memory_ratio) * 100
+
+            # 对于pt分离的情况，也考虑内存使用率的影响
+            # 如果任一节点内存使用率过高，适当增加成本以避免过载
+            high_memory_penalty = 0
+            if p_new_memory_ratio > 0.9:
+                high_memory_penalty += 50 * (p_new_memory_ratio - 0.9)
+            if t_new_memory_ratio > 0.9:
+                high_memory_penalty += 50 * (t_new_memory_ratio - 0.9)
+
+            interference_cost = high_memory_penalty + memory_balance_reward
+
+        # Total Cost
+        return wait_cost_p + wait_cost_t + transfer_cost + interference_cost
+
     def check_memory_feasibility(self, instance, new_memory_demand):
         """检查是否有足够的未来显存，防止死锁的关键"""
         available = instance.max_memory - instance.sched_memory
@@ -1814,7 +1850,7 @@ class UnifiedFluidScheduler(KVScheduler):
                         continue
 
                 # 3. 计算成本 (排队 + 传输 + 混合干扰)
-                cost = self.calculate_cost(p_cand, t_cand, request, prompt_task, token_task)
+                cost = self.calculate_cost_(p_cand, t_cand, request, prompt_task, token_task)
 
                 if cost < best_cost:
                     best_cost = cost
@@ -1862,7 +1898,7 @@ class UnifiedFluidScheduler(KVScheduler):
         重写 run_request 以支持调度失败的情况。
         这是由 NoOpRouter 触发的入口点。
         """
-        # 1. 尝试调度
+        # 1. 第一次尝试调度
         is_scheduled = self.schedule(request)
 
         if is_scheduled:
@@ -1872,23 +1908,24 @@ class UnifiedFluidScheduler(KVScheduler):
 
             # 记录调度开销 (保持原有逻辑)
             # ... (如果有时间测量的代码放在这) ...
+            assert request.metrics.success_schedule_time == 0
+            request.metrics.success_schedule_time = clock()
 
             self.spawn_executor(self.executor_type, request)
-
-            # 只要在队列里就移除 (如果请求是刚来的，可能还没在队列里，所以要check)
-            if request in self.pending_queue:
-                self.pending_queue.remove(request)
-
+            self.pending_queue.remove(request)
             self.executing_queue.append(request)
         else:
             # --- 失败路径 (显存满) ---
             # 1. 确保请求在 pending_queue 里
-            if request not in self.pending_queue:
-                self.pending_queue.append(request)
-
+            # if request not in self.pending_queue:
+            #     self.pending_queue.append(request)
+            if hasattr(request.metrics,
+                       'first_schedule_failure_timestamp') and request.metrics.first_schedule_failure_timestamp == 0:
+                request.metrics.first_schedule_failure_timestamp = clock()
             # 2. 什么都不做，直接返回。
             # 请求会留在 pending_queue 中，等待其他请求完成后触发重试。
             pass
+
 
     def request_completion(self, request):
         """
@@ -1897,6 +1934,12 @@ class UnifiedFluidScheduler(KVScheduler):
         """
         # 1. 标准完成逻辑 (释放资源、记录数据等)
         super().request_completion(request)
+        assert request.metrics.schedule_failure_duration==0
+        if hasattr(request.metrics,
+                   'first_schedule_failure_timestamp') and request.metrics.first_schedule_failure_timestamp > 0:
+            request.metrics.schedule_failure_duration = clock() - request.metrics.first_schedule_failure_timestamp
+        assert request.metrics.success_schedule_time > 0
+        request.metrics.schedule_success_duration = clock() - request.metrics.success_schedule_time
 
         # 2. 显存已释放，尝试处理积压的等待队列
         # 使用 While 循环尝试尽可能多地放入排队的任务
@@ -1920,7 +1963,7 @@ class UnifiedFluidScheduler(KVScheduler):
                 self.pending_queue.pop(0)  # 移除队头
                 self.executing_queue.append(retry_request)
 
+                assert retry_request.metrics.success_schedule_time == 0
+                retry_request.metrics.success_schedule_time = clock()
                 # 如果成功了一个，可以尝试递归查看下一个 (贪心填充)
                 # self.request_completion(None) # 这种递归需要小心，简单起见先不加
-
-
