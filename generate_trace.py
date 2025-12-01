@@ -256,7 +256,7 @@ def download_azure_llm_traces():
 
 if __name__ == "__main__":
     # download prompt and token size distributions
-    download_azure_llm_traces()
+    # download_azure_llm_traces()
     #
     # # generate request traces
     # generate_code_traces(

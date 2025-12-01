@@ -187,6 +187,9 @@ class Scheduler(ABC):
         success_time = [r.metrics.schedule_success_duration for r in self.completed_queue]
         array_results["success_times"] = np.array(success_time)
 
+        request_types = [r.workload_type for r in self.completed_queue]
+        array_results["request_types"] = np.array(success_time)
+
         return array_results
 
 
