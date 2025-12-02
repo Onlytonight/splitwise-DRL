@@ -460,7 +460,7 @@ def main():
     #     save_path=plots_dir + name
     # )
     name1 = ["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"]
-    name2 = ["ttft_time", "tbt_time", "e2e_time"]
+    name2 = ["ttft_times", "tbt_times", "e2e_times"]
     # Generate plots separated by request type
     plot_y_vs_trace_by_request_type(
         results_df,
