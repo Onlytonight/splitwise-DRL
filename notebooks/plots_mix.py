@@ -438,7 +438,7 @@ def main():
 
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")
-    name = 'splitwise'
+    name = 'splitwise-notslowdown'
 
     # Generate plots for slowdown metrics
     # plot_y_vs_trace_new(
