@@ -184,6 +184,11 @@ def get_y_limits(y_var, quantile):
             'top': 4
         }
     if y_var == "e2e_times":
+        if quantile == 0.99:
+            return {
+                'bottom': 0,
+                'top': 80
+            }
         return {
             'bottom': 0,
             'top': 50
