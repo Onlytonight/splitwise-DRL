@@ -259,19 +259,19 @@ if __name__ == "__main__":
     # download_azure_llm_traces()
     #
     # # generate request traces
-    # generate_code_traces(
-    #     max_requests=1000000,
-    #     end_time=600,
-    #     request_rates=list(range(30, 251, 10)),
-    #     code_distributions_file="data/code_distributions.csv")
-    # print("Generated code traces")
-
-    generate_conv_traces(
+    generate_code_traces(
         max_requests=1000000,
         end_time=600,
-        request_rates=list(range(1000,1001, 10)),
-        conv_distributions_file="data/conv_distributions.csv")
-    print("Generated conv traces")
+        request_rates=list(range(30, 31, 10)),
+        code_distributions_file="data/code_distributions.csv")
+    print("Generated code traces")
+
+    # generate_conv_traces(
+    #     max_requests=1000000,
+    #     end_time=600,
+    #     request_rates=list(range(1000,1001, 10)),
+    #     conv_distributions_file="data/conv_distributions.csv")
+    # print("Generated conv traces")
 
     # generate request traces for 2 min
     # generate_code_traces(

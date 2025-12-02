@@ -187,7 +187,7 @@ class Scheduler(ABC):
         success_time = [r.metrics.schedule_success_duration for r in self.completed_queue]
         array_results["success_times"] = np.array(success_time)
 
-        request_types = [r.workload_type for r in self.completed_queue]
+        request_types = [int(r.workload_type) for r in self.completed_queue]
         array_results["request_types"] = np.array(request_types)
 
         return array_results
@@ -681,7 +681,7 @@ class MixedPoolScheduler(KVScheduler):
         if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0) \
             and len(self.mixed_instances) == 0:
             raise ValueError("No instances available")
-        print("MixedPoolScheduler", clock(), request.workload_type)
+        # print("MixedPoolScheduler", clock(), request.workload_type)
 
         prompt_task = request.root_node
         token_task = next(request.successors(prompt_task))
@@ -745,8 +745,8 @@ class MixedPoolScheduler(KVScheduler):
         # bookkeeping
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
-        print("prompt instance num is", len(self.prompt_instances), ",token instance num is",
-              len(self.token_instances), "mixed instance num is", len(self.mixed_instances))
+        # print("prompt instance num is", len(self.prompt_instances), ",token instance num is",
+        #       len(self.token_instances), "mixed instance num is", len(self.mixed_instances))
 
 
 
