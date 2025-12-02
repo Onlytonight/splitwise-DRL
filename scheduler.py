@@ -681,6 +681,7 @@ class MixedPoolScheduler(KVScheduler):
         if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0) \
             and len(self.mixed_instances) == 0:
             raise ValueError("No instances available")
+        print("MixedPoolScheduler", clock(), request.workload_type)
 
         prompt_task = request.root_node
         token_task = next(request.successors(prompt_task))

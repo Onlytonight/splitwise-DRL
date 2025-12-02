@@ -184,7 +184,7 @@ if __name__ == "__main__":
 
     # 场景 2: 固定 Code 比例 30% (典型 Copilot 场景)，扫描 QPS 压力
     # 用于测试 Throughput 和 Latency 曲线
-    rates_to_test = list(range(30, 150, 10))
+    rates_to_test = list(range(30, 151, 10))
     fixed_ratio = [0.3]
 
     generate_mixed_traces_batch(

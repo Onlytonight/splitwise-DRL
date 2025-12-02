@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
-from utils import get_summary_data, get_request_data
+from notebooks.utils import  get_summary_data, get_request_data
 from perf_model import PerfModel
 
 # 设置全局字体大小，比默认字体小2号
@@ -23,6 +23,7 @@ plots_dir = "../plots/mixed_trace/"
 perf_model_path = "../data/perf_model.csv"
 os.makedirs(plots_dir, exist_ok=True)
 req_types = [0,1]
+
 
 def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
     """
@@ -64,7 +65,7 @@ def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
                 result[key] = value
             result["trace"] = trace
             result["seed"] = seed
-            
+
             # 如果存在request_types列，则分别计算code和conv类型的指标
             if 'request_types' in request_df.columns:
                 for req_type in req_types:
@@ -74,7 +75,7 @@ def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
                             result[f"{req_type}_ttft_slowdown_p{int(quantile * 100)}"] = type_filtered_df["ttft_slowdown"].quantile(quantile)
                             result[f"{req_type}_tbt_slowdown_p{int(quantile * 100)}"] = type_filtered_df["tbt_slowdown"].quantile(quantile)
                             result[f"{req_type}_e2e_slowdown_p{int(quantile * 100)}"] = type_filtered_df["e2e_slowdown"].quantile(quantile)
-                            
+
                         # 对于时间指标，我们使用原始值而不是slowdown
                         for quantile in quantiles:
                             result[f"{req_type}_ttft_times_p{int(quantile * 100)}"] = type_filtered_df["ttft_times"].quantile(quantile)
@@ -230,7 +231,7 @@ def plot_y_vs_trace_by_request_type(results_df,
     request_types = req_types
     colors = ['blue', 'orange']
     markers = ['o', 's']
-    
+
     for i, req_type in enumerate(request_types):
         for y_var in y_vars:
             for quantile in quantiles:
@@ -355,7 +356,7 @@ def plot_additional_metrics_by_request_type(results_df,
     request_types = req_types
     colors = ['blue', 'orange']
     markers = ['o', 's']
-    
+
     for i, req_type in enumerate(request_types):
         for y_var in y_vars:
             for quantile in quantiles:
@@ -416,7 +417,7 @@ def main():
     }
 
     configs = [mixed_pool_config]
-    traces = [f"mixed_qps{i}_code30" for i in range(30, 100, 10)]  # Example range
+    traces = [f"mixed_qps_{i}_code30" for i in range(30, 31, 10)]  # Example range
 
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")
@@ -441,7 +442,7 @@ def main():
         title=None,
         save_path=plots_dir + name
     )
-    
+
     # Generate plots separated by request type
     plot_y_vs_trace_by_request_type(
         results_df,
@@ -451,7 +452,7 @@ def main():
         title=None,
         save_path=plots_dir + name
     )
-    
+
     plot_additional_metrics_by_request_type(
         results_df,
         traces,
