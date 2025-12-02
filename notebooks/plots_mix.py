@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
-from notebooks.utils import  get_summary_data, get_request_data
+from utils import  get_summary_data, get_request_data
 from perf_model import PerfModel
 
 # 设置全局字体大小，比默认字体小2号
@@ -417,7 +417,7 @@ def main():
     }
 
     configs = [mixed_pool_config]
-    traces = [f"mixed_qps_{i}_code30" for i in range(30, 31, 10)]  # Example range
+    traces = [f"mixed_qps_{i}_code30" for i in range(30, 141, 10)]  # Example range
 
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")
