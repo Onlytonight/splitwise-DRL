@@ -22,7 +22,7 @@ results_dir = "../results"
 plots_dir = "../plots/mixed_trace/"
 perf_model_path = "../data/perf_model.csv"
 os.makedirs(plots_dir, exist_ok=True)
-
+req_types = [0,1]
 
 def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
     """
@@ -67,7 +67,7 @@ def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
             
             # 如果存在request_types列，则分别计算code和conv类型的指标
             if 'request_types' in request_df.columns:
-                for req_type in ['code', 'conv']:
+                for req_type in req_types:
                     type_filtered_df = request_df[request_df['request_types'] == req_type]
                     if not type_filtered_df.empty:
                         for quantile in quantiles:
@@ -227,7 +227,7 @@ def plot_y_vs_trace_by_request_type(results_df,
                             constrained_layout=True)
 
     # 绘制不同请求类型的曲线
-    request_types = ['code', 'conv']
+    request_types = req_types
     colors = ['blue', 'orange']
     markers = ['o', 's']
     
@@ -352,7 +352,7 @@ def plot_additional_metrics_by_request_type(results_df,
                             constrained_layout=True)
 
     # 绘制不同请求类型的曲线
-    request_types = ['code', 'conv']
+    request_types = req_types
     colors = ['blue', 'orange']
     markers = ['o', 's']
     
