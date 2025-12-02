@@ -238,7 +238,7 @@ class GenerativeLLMRequest(Request):
     flow_node: Flow = None
     cost: float = 0.
     memory: float = 0.
-    workload_type: str = ""  # 添加这一行来接受workload_type参数
+    workload_type: int = 0  # 添加这一行来接受workload_type参数
     metrics: GenerativeLLMRequestMetrics = field(
         default_factory=GenerativeLLMRequestMetrics)
 
