@@ -117,7 +117,7 @@ def generate_mixed_trace_from_distributions(
         "prompt_size": prompt_sizes,
         "token_size": token_sizes,
         # 额外添加一个 human-readable 的标签，方便 debug 和画图
-        "workload_type": ["CODE" if x else "CHAT" for x in is_code_mask]
+        "workload_type": [0 if x else 1 for x in is_code_mask] #1chat 0code
     })
 
     return trace_df
@@ -184,7 +184,7 @@ if __name__ == "__main__":
 
     # 场景 2: 固定 Code 比例 30% (典型 Copilot 场景)，扫描 QPS 压力
     # 用于测试 Throughput 和 Latency 曲线
-    rates_to_test = list(range(30, 100, 10))
+    rates_to_test = list(range(30, 150, 10))
     fixed_ratio = [0.3]
 
     generate_mixed_traces_batch(
@@ -194,5 +194,5 @@ if __name__ == "__main__":
         mix_ratios=fixed_ratio,
         code_file=code_file,
         chat_file=chat_file,
-        trace_filename_template="../traces/mixed_qps{}_code{}.csv"
+        trace_filename_template="../traces/mixed_qps_{}_code{}.csv"
     )
