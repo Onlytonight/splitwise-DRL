@@ -133,20 +133,20 @@ def get_y_limits(y_var, quantile):
     """
     Get Y-axis limits for plots.
     """
-    # if quantile == 0.5 or quantile == 0.9:
-    #     return {
-    #         'bottom': 0,
-    #         'top': 4
-    #     }
-    # elif quantile == 0.99:
-    #     return {
-    #         'bottom': 0,
-    #         'top': 8
-    #     }
-    return {
-        'bottom': 0,
-        'top': 8
-    }
+    if quantile == 0.5 or quantile == 0.9:
+        return {
+            'bottom': 0,
+            'top': 4
+        }
+    elif quantile == 0.99:
+        return {
+            'bottom': 0,
+            'top': 50
+        }
+    # return {
+    #     'bottom': 0,
+    #     'top': 8
+    # }
     raise Exception(f"Invalid y_var:quantile {y_var}:{quantile}")
 
 
