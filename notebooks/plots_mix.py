@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
-from notebooks.utils import  get_summary_data, get_request_data
+from utils import  get_summary_data, get_request_data
 from perf_model import PerfModel
 
 # 设置全局字体大小，比默认字体小2号
@@ -24,23 +24,23 @@ perf_model_path = "../data/perf_model.csv"
 os.makedirs(plots_dir, exist_ok=True)
 req_types = [0,1]
 
-path = 'D:\homework\网络\论文\LLMshedule\pd分离\splitwise-DRL\plots\splitplot'
-def get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed, model=""):
-    try:
-        summary_df = pd.read_csv(path+"/summary.csv")
-    except Exception as e:
-        print(e)
-        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/summary.csv")
-        return None
-    return summary_df
-
-def get_request_data(results_dir, scheduler, start_state, cluster, trace, seed, model=""):
-    try:
-        request_df = pd.read_csv(path+"/detailed/0.csv")
-    except:
-        print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/detailed/0.csv")
-        return None
-    return request_df
+# path = 'D:\homework\网络\论文\LLMshedule\pd分离\splitwise-DRL\plots\splitplot'
+# def get_summary_data(results_dir, scheduler, start_state, cluster, trace, seed, model=""):
+#     try:
+#         summary_df = pd.read_csv(path+"/summary.csv")
+#     except Exception as e:
+#         print(e)
+#         print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/summary.csv")
+#         return None
+#     return summary_df
+#
+# def get_request_data(results_dir, scheduler, start_state, cluster, trace, seed, model=""):
+#     try:
+#         request_df = pd.read_csv(path+"/detailed/0.csv")
+#     except:
+#         print(f"Failed to read {results_dir}/{seed}/{start_state}/{trace}/{cluster}/{model}/{scheduler}/detailed/0.csv")
+#         return None
+#     return request_df
 
 def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
     """
@@ -434,31 +434,31 @@ def main():
     }
 
     configs = [mixed_pool_config]
-    traces = [f"mixed_qps_{i}_code30" for i in range(30, 31, 10)]  # Example range
+    traces = [f"mixed_qps_{i}_code30" for i in range(30, 141, 10)]  # Example range
 
     # Get data
     results_df, request_dfs = get_data(configs, traces, seed=0, model="bloom-176b")
     name = 'splitwise'
 
-    # # Generate plots for slowdown metrics
-    # plot_y_vs_trace_new(
-    #     results_df,
-    #     traces,
-    #     y_vars=["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"],
-    #     y_vars_labels=["TTFT", "TBT", "E2E"],
-    #     title=None,
-    #     save_path=plots_dir + name
-    # )
-    #
-    # # Generate plots for additional metrics (nth_token_overheads and queue_times)
-    # plot_additional_metrics(
-    #     results_df,
-    #     traces,
-    #     y_vars=["nth_token_overheads", "queue_times"],
-    #     y_vars_labels=["Nth Token Overheads", "Queue Times"],
-    #     title=None,
-    #     save_path=plots_dir + name
-    # )
+    # Generate plots for slowdown metrics
+    plot_y_vs_trace_new(
+        results_df,
+        traces,
+        y_vars=["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"],
+        y_vars_labels=["TTFT", "TBT", "E2E"],
+        title=None,
+        save_path=plots_dir + name
+    )
+
+    # Generate plots for additional metrics (nth_token_overheads and queue_times)
+    plot_additional_metrics(
+        results_df,
+        traces,
+        y_vars=["nth_token_overheads", "queue_times"],
+        y_vars_labels=["Nth Token Overheads", "Queue Times"],
+        title=None,
+        save_path=plots_dir + name
+    )
 
     # Generate plots separated by request type
     plot_y_vs_trace_by_request_type(
