@@ -158,7 +158,7 @@ def get_y_limits(y_var, quantile):
     elif quantile == 0.99:
         return {
             'bottom': 0,
-            'top': 50
+            'top': 8
         }
     # return {
     #     'bottom': 0,
