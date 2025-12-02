@@ -441,30 +441,31 @@ def main():
     name = 'splitwise'
 
     # Generate plots for slowdown metrics
-    plot_y_vs_trace_new(
-        results_df,
-        traces,
-        y_vars=["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"],
-        y_vars_labels=["TTFT", "TBT", "E2E"],
-        title=None,
-        save_path=plots_dir + name
-    )
-
-    # Generate plots for additional metrics (nth_token_overheads and queue_times)
-    plot_additional_metrics(
-        results_df,
-        traces,
-        y_vars=["nth_token_overheads", "queue_times"],
-        y_vars_labels=["Nth Token Overheads", "Queue Times"],
-        title=None,
-        save_path=plots_dir + name
-    )
-
+    # plot_y_vs_trace_new(
+    #     results_df,
+    #     traces,
+    #     y_vars=["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"],
+    #     y_vars_labels=["TTFT", "TBT", "E2E"],
+    #     title=None,
+    #     save_path=plots_dir + name
+    # )
+    #
+    # # Generate plots for additional metrics (nth_token_overheads and queue_times)
+    # plot_additional_metrics(
+    #     results_df,
+    #     traces,
+    #     y_vars=["nth_token_overheads", "queue_times"],
+    #     y_vars_labels=["Nth Token Overheads", "Queue Times"],
+    #     title=None,
+    #     save_path=plots_dir + name
+    # )
+    name1 = ["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"]
+    name2 = ["ttft", "tbt", "e2e"]
     # Generate plots separated by request type
     plot_y_vs_trace_by_request_type(
         results_df,
         traces,
-        y_vars=["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"],
+        y_vars=name2,
         y_vars_labels=["TTFT", "TBT", "E2E"],
         title=None,
         save_path=plots_dir + name
