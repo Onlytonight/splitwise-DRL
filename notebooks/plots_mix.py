@@ -173,6 +173,22 @@ def get_y_limits(y_var, quantile):
     """
     Get Y-axis limits for plots.
     """
+    if y_var == "tbt_times":
+        return {
+            'bottom': 0,
+            'top': 0.5
+        }
+    if y_var == "ttft_times":
+        return {
+            'bottom': 0,
+            'top': 4
+        }
+    if y_var == "e2e_times":
+        return {
+            'bottom': 0,
+            'top': 50
+        }
+
     if quantile == 0.5 or quantile == 0.9:
         return {
             'bottom': 0,
@@ -520,7 +536,7 @@ def main():
     plot_y_vs_trace_by_request_type(
         results_df,
         traces,
-        y_vars=name1,
+        y_vars=name2,
         y_vars_labels=["TTFT", "TBT", "E2E"],
         title=None,
         save_path=plots_dir + name
