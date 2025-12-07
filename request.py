@@ -239,6 +239,7 @@ class GenerativeLLMRequest(Request):
     cost: float = 0.
     memory: float = 0.
     workload_type: int = 0  # 添加这一行来接受workload_type参数
+    stage: int = 0 #prompt 1, kv 2,token 3
     metrics: GenerativeLLMRequestMetrics = field(
         default_factory=GenerativeLLMRequestMetrics)
 

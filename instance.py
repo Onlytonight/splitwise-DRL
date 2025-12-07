@@ -243,6 +243,7 @@ class ORCAInstance(Instance):
         self.pending_prompt_queue = []
         # map requests->tasks on this instance
         self.request_tasks = {}
+        self.last_complete_time = 0.
 
         if self.debug:
             self.scheduler_logger.debug(
@@ -547,6 +548,7 @@ class ORCAInstance(Instance):
         self.completion_events["iteration"] = schedule_event(
             iteration_total_time,
             lambda instance=self: instance.complete_iteration())
+        self.last_complete_time = clock()+iteration_total_time
 
 
     def pause_iteration(self):
@@ -654,6 +656,8 @@ class ORCAInstance(Instance):
         self.pause_next_iteration = False
         self.start_iteration()
 
+
+
     def task_completion(self, task):
         """
         Task completes within a batch.
@@ -715,6 +719,8 @@ class SplitwiseInstance(ORCAInstance):
                          debug)
         self.max_preemptions = max_preemptions
         self.max_batch_tokens = max_batch_tokens
+        self.waiting_tasks = {}
+        self.token_queue_size = 0
 
     def preempt_task(self, task):
         """
@@ -739,8 +745,10 @@ class SplitwiseInstance(ORCAInstance):
             self.pending_tokens += task.prompt_size
         elif isinstance(task, TokenTask):
             self.pending_tokens += 1
+            self.token_queue_size += 1
         else:
             raise ValueError(f"Unexpected task type {task.task_type} in add_pending_task")
+        self.waiting_tasks[task] = clock()
 
     def remove_pending_task(self, task):
         """
@@ -753,9 +761,12 @@ class SplitwiseInstance(ORCAInstance):
             self.pending_prompt_queue.remove(task)
             self.pending_tokens -= task.prompt_size
         elif isinstance(task, TokenTask):
+            self.token_queue_size -= 1
             self.pending_tokens -= 1
         else:
             raise ValueError(f"Unexpected task type {task.task_type} in remove_pending_task")
+        if task in self.waiting_tasks:
+            del self.waiting_tasks[task]
 
     def task_arrival(self, task):
         """
@@ -940,3 +951,18 @@ class SplitwiseInstance(ORCAInstance):
         
         # 返回被抢占的任务列表和新添加的任务列表
         return preempted_tasks, new_tasks
+
+    def get_waiting_tasks_info(self):
+        """
+        获取所有等待任务的平均等待时间
+        返回平均等待时间
+        """
+        if not self.waiting_tasks:
+            return 0.0
+
+        total_wait_time = 0.0
+        current_time = clock()
+        for task, start_time in self.waiting_tasks.items():
+            total_wait_time += current_time - start_time
+
+        return total_wait_time / len(self.waiting_tasks)
