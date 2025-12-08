@@ -26,7 +26,8 @@ class Application():
                  overheads,
                  scheduler=None,
                  allocator=None,
-                 instances=None):
+                 instances=None,
+                 scaling_manager=None):
         self.application_id = application_id
 
         # hardware
@@ -44,6 +45,8 @@ class Application():
         self.allocator = allocator
         self.router = router
         self.arbiter = arbiter
+        self.scaling_manager = scaling_manager  # 扩缩容管理器
+        self.start_state_manager = None  # 启动状态管理器，由 load_start_state 初始化
 
         # overheads
         self.overheads = overheads

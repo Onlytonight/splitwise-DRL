@@ -10,3 +10,6 @@
   overheads: {}
   debug: ${debug}
   _target_: application.Application
+  scaling_manager:
+    scale_up_delay: 10.0           # 扩容启动延迟（秒）
+    drain_check_interval: 1.0      # 排空检查间隔（秒）

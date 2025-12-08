@@ -10,6 +10,8 @@ import pandas as pd
 from scipy import stats
 
 
+
+
 Distributions = namedtuple('Distributions', ['application_id',
                                              'request_type',
                                              'arrival_process',
@@ -255,6 +257,8 @@ def download_azure_llm_traces():
 
 
 if __name__ == "__main__":
+    np.random.seed(0)
+
     # download prompt and token size distributions
     download_azure_llm_traces()
     #
@@ -269,7 +273,7 @@ if __name__ == "__main__":
     generate_conv_traces(
         max_requests=1000000,
         end_time=600,
-        request_rates=list(range(1000,1001, 10)),
+        request_rates=list(range(10, 501, 10)),
         conv_distributions_file="data/conv_distributions.csv")
     print("Generated conv traces")
 

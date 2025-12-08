@@ -68,6 +68,9 @@ class Instance():
         self.sched_memory = self.model.size.total_size
         self.sched_pending_tokens = 0
         self.sched_tag = None
+        
+        ## scaling management
+        self.scaling_status = None  # 由 ScalingManager 管理，值为 InstanceStatus 枚举
 
         ## instance logger
         if self.debug:
@@ -146,6 +149,32 @@ class Instance():
         Ignore power for now.
         """
         pass
+    
+    def is_active_for_scheduling(self):
+        """
+        检查实例是否可以接收新的调度任务
+        由 ScalingManager 调用来判断实例状态
+        
+        Returns:
+            bool: True if instance can accept new tasks
+        """
+        # 如果实例有关联的 scaling_manager，使用其判断
+        if hasattr(self.application, 'scaling_manager') and self.application.scaling_manager:
+            return self.application.scaling_manager.can_schedule_to_instance(self)
+        # 否则默认为可调度
+        return True
+    
+    def has_pending_work(self):
+        """
+        检查实例是否还有待处理的工作
+        用于缩容时判断实例是否可以安全移除
+        
+        Returns:
+            bool: True if instance has pending work
+        """
+        return (len(self.pending_queue) > 0 or 
+                len(self.batch) > 0 or
+                len(self.blocked_queue) > 0)
 
     def run_task(self, task):
         """

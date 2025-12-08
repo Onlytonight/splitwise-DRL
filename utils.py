@@ -17,7 +17,8 @@ from scipy import stats
 
 def file_logger(name, level=logging.INFO):
     """
-    returns a custom logger that logs to a file
+    Returns a custom logger that logs to a file.
+    Ensures the entire path for the log file exists (creates directories if needed).
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -25,8 +26,14 @@ def file_logger(name, level=logging.INFO):
     # don't print to console (don't propagate to root logger)
     logger.propagate = False
 
+    # Ensure the entire parent directory exists
+    log_file = f"{name}.csv"
+    log_path = Path(log_file)
+    if log_path.parent != Path("."):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
     # create a file handler
-    handler = logging.FileHandler(f"{name}.csv", mode="w")
+    handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
     handler.setLevel(level)
 
     # add the handlers to the logger

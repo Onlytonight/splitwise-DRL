@@ -67,6 +67,26 @@ class Scheduler(ABC):
         Helps maintain the scheduler-specific view of instances. 
         """
         self.instances.append(instance)
+    
+    def get_schedulable_instances(self, instances=None):
+        """
+        获取可调度的实例列表（过滤掉正在扩缩容的实例）
+        
+        Args:
+            instances: 要过滤的实例列表，如果为 None 则使用 self.instances
+            
+        Returns:
+            list: 可调度的实例列表
+        """
+        if instances is None:
+            instances = self.instances
+        
+        # 检查是否有 scaling_manager
+        if hasattr(self.application, 'scaling_manager') and self.application.scaling_manager:
+            return self.application.scaling_manager.get_active_instances(instances)
+        
+        # 如果没有 scaling_manager，检查实例自己的状态
+        return [inst for inst in instances if inst.is_active_for_scheduling()]
 
     @abstractmethod
     def schedule(self, request, *args, **kwargs):
@@ -234,6 +254,14 @@ class KVScheduler(Scheduler):
                 else:
                     raise ValueError(f"Unsupported instance type: \
                                         {instance.processors[0].name}")
+    
+    def get_schedulable_prompt_instances(self):
+        """获取可调度的 prompt 实例"""
+        return self.get_schedulable_instances(self.prompt_instances)
+    
+    def get_schedulable_token_instances(self):
+        """获取可调度的 token 实例"""
+        return self.get_schedulable_instances(self.token_instances)
 
     def add_kv_cache_transfer(self, request, src_instance, dest_instance, bandwidth):
         """
@@ -275,7 +303,8 @@ class RandomScheduler(Scheduler):
         """
         Assigns all nodes in request to a random instance
         """
-        if len(self.instances) == 0:
+        schedulable_instances = self.get_schedulable_instances()
+        if len(schedulable_instances) == 0:
             raise ValueError("No instances available")
 
         prompt_task = request.root_node
@@ -283,7 +312,7 @@ class RandomScheduler(Scheduler):
         # enable run-to-completion by chaining
         prompt_task.chain = [token_task]
 
-        instance = np.random.choice(self.instances)
+        instance = np.random.choice(schedulable_instances)
         for node in request.dag.nodes:
             if isinstance(node, Task):
                 node.instance = instance
@@ -313,7 +342,8 @@ class RoundRobinScheduler(Scheduler):
         """
         Assigns all nodes in request to the next instance
         """
-        if len(self.instances) == 0:
+        schedulable_instances = self.get_schedulable_instances()
+        if len(schedulable_instances) == 0:
             raise ValueError("No instances available")
 
         prompt_task = request.root_node
@@ -321,8 +351,10 @@ class RoundRobinScheduler(Scheduler):
         # enable run-to-completion by chaining
         prompt_task.chain = [token_task]
 
-        instance = self.instances[self.instance_index]
-        self.instance_index = (self.instance_index + 1) % len(self.instances)
+        # 使用可调度实例的索引
+        self.instance_index = self.instance_index % len(schedulable_instances)
+        instance = schedulable_instances[self.instance_index]
+        self.instance_index = (self.instance_index + 1) % len(schedulable_instances)
         for node in request.dag.nodes:
             if isinstance(node, Task):
                 node.instance = instance
@@ -339,7 +371,8 @@ class JSQScheduler(Scheduler):
         """
         Assigns all nodes in request to the least loaded instance
         """
-        if len(self.instances) == 0:
+        schedulable_instances = self.get_schedulable_instances()
+        if len(schedulable_instances) == 0:
             raise ValueError("No instances available")
 
         prompt_task = request.root_node
@@ -347,7 +380,7 @@ class JSQScheduler(Scheduler):
         # enable run-to-completion by chaining
         prompt_task.chain = [token_task]
 
-        instance = min(self.instances,
+        instance = min(schedulable_instances,
                        key=lambda instance: len(instance.pending_requests))
         for node in request.dag.nodes:
             if isinstance(node, Task):
@@ -365,7 +398,8 @@ class TokenJSQScheduler(Scheduler):
         """
         Assigns all nodes in request DAG to the instance with smallest queue
         """
-        if len(self.instances) == 0:
+        schedulable_instances = self.get_schedulable_instances()
+        if len(schedulable_instances) == 0:
             raise ValueError("No instances available")
 
         prompt_task = request.root_node
@@ -373,7 +407,7 @@ class TokenJSQScheduler(Scheduler):
         # enable run-to-completion by chaining
         prompt_task.chain = [token_task]
 
-        instance = min(self.instances,
+        instance = min(schedulable_instances,
                        key=lambda instance: instance.sched_pending_tokens)
         for node in request.dag.nodes:
             if isinstance(node, Task):
@@ -859,9 +893,11 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         Check if prompt queue is long
         """
-        if len(instances) == 0:
+        # 过滤可调度的实例
+        schedulable = self.get_schedulable_instances(instances)
+        if len(schedulable) == 0:
             raise ValueError("No prompt instances")
-        prompt_instance = min(instances,
+        prompt_instance = min(schedulable,
                               key=lambda instance: instance.sched_pending_tokens)
         if self.is_queue_long(prompt_instance, prompt_task):
             return None
@@ -871,9 +907,11 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         Checks if instance memory is full
         """
-        if len(instances) == 0:
+        # 过滤可调度的实例
+        schedulable = self.get_schedulable_instances(instances)
+        if len(schedulable) == 0:
             raise ValueError("No token instances")
-        token_instance = min(instances,
+        token_instance = min(schedulable,
                              key=lambda instance: (instance.sched_memory))
         if self.is_memory_loaded(token_instance, [prompt_task, token_task]):
             return None

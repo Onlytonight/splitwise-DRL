@@ -44,7 +44,16 @@ class Allocator(ABC):
         """
         Spin up a new instance of the application on specified processors.
         Assigns a metadata tag to the instance for orchestration.
-        # TODO: better way to pass in processors / parallelism
+        
+        Args:
+            instance_cfg: 实例配置
+            processors: 处理器列表
+            parallelism: 模型并行配置
+            pre_start: 是否立即启动（True）或延迟启动（False）
+            tag: 实例标签（如 "prompt" 或 "token"）
+        
+        Returns:
+            instance: 创建的实例对象
         """
         model_architecture = self.application.model_architecture
         model_size = self.application.model_size
@@ -67,6 +76,9 @@ class Allocator(ABC):
             finish_spin_up()
         else:
             schedule_event(self.overheads.spin_up, finish_spin_up)
+        
+        # 返回创建的实例
+        return instance
 
     def finish_spin_up_instance(self, instance):
         """

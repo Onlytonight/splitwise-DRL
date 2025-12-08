@@ -87,6 +87,19 @@ def init_applications(cfg, cluster, router, arbiter):
                                               cluster=cluster,
                                               router=router,
                                               arbiter=arbiter)
+        
+        # 初始化扩缩容管理器
+        if hasattr(application_cfg, 'scaling_manager') and application_cfg.scaling_manager is not None:
+            from scaling_manager import ScalingManager
+            scaling_manager = ScalingManager(
+                application=application,
+                cluster=cluster,
+                scale_up_delay=getattr(application_cfg.scaling_manager, 'scale_up_delay', 10.0),
+                drain_check_interval=getattr(application_cfg.scaling_manager, 'drain_check_interval', 1.0),
+                debug=getattr(application_cfg, 'debug', False)
+            )
+            application.scaling_manager = scaling_manager
+        
         applications[application_cfg.application_id] = application
     return applications
 

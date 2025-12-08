@@ -18,10 +18,12 @@ class Cluster:
     def __init__(self,
                  servers,
                  interconnects,
-                 power_budget):
+                 power_budget,
+                 cluster_cfg=None):
         self.servers = servers
         self.interconnects = interconnects
         self.power_budget = power_budget
+        self.cluster_cfg = cluster_cfg  # 保存集群配置
         self.total_power = 0
         for sku_name in self.servers:
             for server in self.servers[sku_name]:
@@ -47,6 +49,62 @@ class Cluster:
         for server in self.servers:
             models.extend(server.models)
         return models
+    
+    def get_cluster_config(self):
+        """
+        获取集群配置
+        
+        Returns:
+            cluster_cfg: 集群配置对象
+        """
+        return self.cluster_cfg
+    
+    def get_server_config(self, sku_name):
+        """
+        获取指定 SKU 的服务器配置
+        
+        Args:
+            sku_name: 服务器 SKU 名称
+            
+        Returns:
+            server_cfg: 服务器配置对象（如果存在）
+        """
+        if self.cluster_cfg is None:
+            return None
+        
+        for server_cfg in self.cluster_cfg.servers:
+            if server_cfg.sku == sku_name:
+                return server_cfg
+        return None
+    
+    def add_server_to_cluster(self, server, sku_name):
+        """
+        向集群添加服务器
+        
+        Args:
+            server: 要添加的服务器
+            sku_name: 服务器 SKU 名称
+        """
+        server.cluster = self
+        if sku_name not in self.servers:
+            self.servers[sku_name] = []
+        self.servers[sku_name].append(server)
+        self.update_power(server.power)
+    
+    def remove_server_from_cluster(self, server):
+        """
+        从集群移除服务器
+        
+        Args:
+            server: 要移除的服务器
+        """
+        for sku_name in self.servers:
+            if server in self.servers[sku_name]:
+                self.servers[sku_name].remove(server)
+                self.update_power(-server.power)
+                server.cluster = None
+                return True
+        return False
 
     @property
     def power(self, cached=True, servers=None):
@@ -119,7 +177,8 @@ class Cluster:
 
         return cls(servers=servers,
                    interconnects=interconnects,
-                   power_budget=cluster_cfg.power_budget)
+                   power_budget=cluster_cfg.power_budget,
+                   cluster_cfg=cluster_cfg)
 
 
 if __name__ == "__main__":

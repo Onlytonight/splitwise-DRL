@@ -8,10 +8,108 @@ from model import ModelParallelism
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 
 
+class StartStateManager:
+    """
+    管理启动状态配置，提供获取实例配置和并行度的方法
+    """
+    def __init__(self, start_state_cfg):
+        self.start_state_cfg = start_state_cfg
+        self.state_type = start_state_cfg.state_type
+        
+        # 保存 prompt 和 token 配置
+        if "splitwise" in self.state_type:
+            self.prompt_cfg = start_state_cfg.prompt if hasattr(start_state_cfg, 'prompt') else None
+            self.token_cfg = start_state_cfg.token if hasattr(start_state_cfg, 'token') else None
+            
+            # 保存并行度配置
+            if self.prompt_cfg:
+                self.prompt_parallelism = ModelParallelism(
+                    pipeline_parallelism=self.prompt_cfg.pipeline_parallelism,
+                    tensor_parallelism=self.prompt_cfg.tensor_parallelism
+                )
+            else:
+                self.prompt_parallelism = None
+            
+            if self.token_cfg:
+                self.token_parallelism = ModelParallelism(
+                    pipeline_parallelism=self.token_cfg.pipeline_parallelism,
+                    tensor_parallelism=self.token_cfg.tensor_parallelism
+                )
+            else:
+                self.token_parallelism = None
+        elif self.state_type in ["orca", "baseline"]:
+            self.instance_cfg = start_state_cfg.instance if hasattr(start_state_cfg, 'instance') else None
+            if self.instance_cfg:
+                self.parallelism = ModelParallelism(
+                    pipeline_parallelism=self.instance_cfg.pipeline_parallelism,
+                    tensor_parallelism=self.instance_cfg.tensor_parallelism
+                )
+            else:
+                self.parallelism = None
+        else:
+            self.prompt_cfg = None
+            self.token_cfg = None
+            self.instance_cfg = None
+            self.prompt_parallelism = None
+            self.token_parallelism = None
+            self.parallelism = None
+    
+    def get_instance_config(self, tag=None):
+        """
+        获取实例配置
+        
+        Args:
+            tag: 实例标签（"prompt" 或 "token"），如果为 None 则返回默认配置
+            
+        Returns:
+            instance_cfg: 实例配置对象
+        """
+        if "splitwise" in self.state_type:
+            if tag == "prompt":
+                return self.prompt_cfg
+            elif tag == "token":
+                return self.token_cfg
+            else:
+                # 默认返回 prompt 配置
+                return self.prompt_cfg if self.prompt_cfg else self.token_cfg
+        else:
+            return self.instance_cfg
+    
+    def get_parallelism(self, tag=None):
+        """
+        获取并行度配置
+        
+        Args:
+            tag: 实例标签（"prompt" 或 "token"），如果为 None 则返回默认并行度
+            
+        Returns:
+            ModelParallelism: 并行度对象
+        """
+        if "splitwise" in self.state_type:
+            if tag == "prompt":
+                return self.prompt_parallelism
+            elif tag == "token":
+                return self.token_parallelism
+            else:
+                # 默认返回 prompt 并行度
+                return self.prompt_parallelism if self.prompt_parallelism else self.token_parallelism
+        else:
+            return self.parallelism
+
+
 def load_start_state(start_state_cfg, **kwargs):
     """
     Load the start state configuration and initialize the cluster.
     """
+    # 创建 StartStateManager 并保存到应用中
+    if 'applications' in kwargs:
+        applications = kwargs['applications']
+        start_state_manager = StartStateManager(start_state_cfg)
+        
+        # 将配置管理器保存到每个应用中
+        for app in applications.values():
+            app.start_state_manager = start_state_manager
+    
     state_type = start_state_cfg.state_type
     if state_type == "unallocated":
         pass

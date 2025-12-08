@@ -212,48 +212,77 @@ class DatabasePerformanceModel(PerformanceModel):
                                *args,
                                **kwargs):
         """
-        Note: assumes that prompts are always processed fully.
-        i.e., we currently do not support prompt chunking.
+        计算一批任务的迭代执行时间
+
+        注意：假设提示词总是被完整处理，即当前不支持提示词分块处理
+
+        参数:
+            batch: 任务批次列表
+            instance: 实例对象，包含模型和硬件信息
+            *args, **kwargs: 其他参数
+
+        返回:
+            iteration_time: 迭代执行时间（秒）
         """
-        model = instance.model.name
-        hardware = instance.processors[0].name
-        pipeline_parallel = instance.model.parallelism.pipeline_parallelism
-        tensor_parallel = instance.model.parallelism.tensor_parallelism
+        # 提取模型和硬件配置信息
+        model = instance.model.name  # 模型名称
+        hardware = instance.processors[0].name  # 硬件名称（第一个处理器）
+        pipeline_parallel = instance.model.parallelism.pipeline_parallelism  # 流水线并行度
+        tensor_parallel = instance.model.parallelism.tensor_parallelism  # 张量并行度
 
-        prompt_tasks = []
-        token_tasks = []
-        batch_tokens = 0
+        # 分别收集提示词任务和token任务，并计算总token数
+        prompt_tasks = []  # 存储提示词任务
+        token_tasks = []  # 存储token任务
+        batch_tokens = 0  # 批次总token数
+
+        # 遍历批次中的所有任务
         for task in batch:
-            if isinstance(task, PromptTask):
-                prompt_tasks.append(task)
-                batch_tokens += task.request.prompt_size
-            elif isinstance(task, TokenTask):
-                token_tasks.append(task)
-                batch_tokens += 1
+            if isinstance(task, PromptTask):  # 如果是提示词任务
+                prompt_tasks.append(task)  # 添加到提示词任务列表
+                batch_tokens += task.request.prompt_size  # 累加提示词长度到总token数
+            elif isinstance(task, TokenTask):  # 如果是token任务
+                token_tasks.append(task)  # 添加到token任务列表
+                batch_tokens += 1  # 每个token任务计为1个token
             else:
-                raise NotImplementedError
+                raise NotImplementedError  # 不支持的任务类型抛出异常
 
+        # 初始化迭代时间变量
         iteration_time = None
-        cache_key = (model, hardware, tensor_parallel, batch_tokens)
-        predictors_key = (model, hardware, tensor_parallel)
+        # 创建缓存键和预测器键，用于查找缓存或预测器
+        cache_key = (model, hardware, tensor_parallel, batch_tokens)  # 缓存键
+        predictors_key = (model, hardware, tensor_parallel)  # 预测器键
 
-        if len(prompt_tasks) == len(batch):
+        # 根据任务类型组合选择不同的计算策略
+        if len(prompt_tasks) == len(batch):  # 如果全部都是提示词任务
+            # 尝试从提示词时间缓存中获取结果
             iteration_time = self.prompt_time_cache.get(cache_key)
-            if iteration_time is None:
+            if iteration_time is None:  # 如果缓存中没有，则进行预测
+                # 使用插值预测器计算提示词处理时间
                 iteration_time = float(self.prompt_time_predictors[predictors_key](batch_tokens))
+                # 将结果存入缓存
                 self.prompt_time_cache[cache_key] = float(iteration_time)
-        elif len(token_tasks) == len(batch):
+
+        elif len(token_tasks) == len(batch):  # 如果全部都是token任务
+            # 尝试从token时间缓存中获取结果
             iteration_time = self.token_time_cache.get(cache_key)
-            if iteration_time is None:
+            if iteration_time is None:  # 如果缓存中没有，则进行预测
+                # 使用插值预测器计算token处理时间
                 iteration_time = float(self.token_time_predictors[predictors_key](batch_tokens))
+                # 将结果存入缓存
                 self.token_time_cache[cache_key] = float(iteration_time)
-        else:
+
+        else:  # 混合任务情况（既有提示词任务又有token任务）
+            # 尝试从提示词时间缓存中获取结果
             iteration_time = self.prompt_time_cache.get(cache_key)
-            if iteration_time is None:
+            if iteration_time is None:  # 如果缓存中没有，则进行预测
+                # 使用插值预测器计算基础时间
                 iteration_time = float(self.prompt_time_predictors[predictors_key](batch_tokens))
+                # 将结果存入缓存
                 self.prompt_time_cache[cache_key] = float(iteration_time)
+            # 对混合任务增加10%的时间开销
             iteration_time *= 1.1
 
+        # 确保计算出的时间大于0
         assert iteration_time > 0
         return iteration_time
 
