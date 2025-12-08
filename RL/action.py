@@ -3,12 +3,14 @@ import math
 
 
 class RLActionExecutor:
-    def __init__(self, cluster, config):
+    def __init__(self, application, config):
         """
-        :param cluster: 仿真器的 cluster 对象
+        :param application: 应用对象（包含 scaling_manager 和 scheduler）
         :param config: 包含动作步长限制的配置
         """
-        self.cluster = cluster
+        self.application = application
+        self.scaling_manager = application.scaling_manager
+        self.scheduler = application.scheduler
 
         # --- 超参数设置 ---
         # 定义 PPO 输出 1.0 对应多少台机器的变化
@@ -35,19 +37,35 @@ class RLActionExecutor:
 
         logging.debug(f"RL Raw Action: {action_vector} -> Deltas: P={delta_p}, T={delta_t}, Mig={delta_mig}")
 
-        self._handle_scaling(delta_p, "prefill")
-        self._handle_scaling(delta_t, "decoding")
+        self._handle_scaling(delta_p, "prompt")
+        self._handle_scaling(delta_t, "token")
 
-    def _handle_scaling(self, delta, role):
+    def _handle_scaling(self, delta, tag):
         """
-        重写
-        处理云端资源的申请与释放
+        使用扩缩容管理器处理资源的申请与释放
+        
+        Args:
+            delta: 实例数量变化（正数为扩容，负数为缩容）
+            tag: 实例标签（"prompt" 或 "token"）
         """
         if delta == 0:
             return
 
-        current_count = self.cluster.count(role)
-        total_count = self.cluster.total_count()
+        # 获取当前实例数量
+        if tag == "prompt":
+            current_instances = self.scheduler.prompt_instances
+        elif tag == "token":
+            current_instances = self.scheduler.token_instances
+        else:
+            logging.warning(f"[Action] Unknown tag: {tag}")
+            return
+        
+        # 获取活跃实例（排除扩缩容中的实例）
+        active_instances = self.scaling_manager.get_active_instances(current_instances)
+        current_count = len(active_instances)
+        
+        # 获取总实例数（包括所有状态）
+        total_count = len(self.scheduler.instances)
 
         if delta > 0:
             # --- 扩容 (Scale Up) ---
@@ -56,21 +74,82 @@ class RLActionExecutor:
             actual_add = min(delta, remaining_quota)
 
             if actual_add > 0:
-                # 假设 cluster.add_instances 会模拟启动延迟
-                self.cluster.add_instances(role=role, count=actual_add)
-                logging.info(f"[Action] Added {actual_add} {role} instances")
+                for _ in range(actual_add):
+                    try:
+                        # 使用全流程扩容：自动创建服务器 + 实例
+                        instance_cfg = self._get_instance_config(tag)
+                        parallelism = self._get_parallelism(tag)
+                        
+                        if instance_cfg is None or parallelism is None:
+                            logging.warning(f"[Action] No configuration found for {tag} instance")
+                            break
+                        
+                        server, instance = self.scaling_manager.scale_up_full(
+                            instance_cfg=instance_cfg,
+                            parallelism=parallelism,
+                            tag=tag,
+                            server_sku=None  # 使用默认 SKU
+                        )
+                        logging.info(f"[Action] Added {tag} instance {instance.instance_id} on server {server.server_id}")
+                    except Exception as e:
+                        logging.error(f"[Action] Failed to add {tag} instance: {e}")
+                        break
             else:
                 logging.warning(f"[Action Blocked] Max cluster size reached ({self.max_total_instances})")
 
         elif delta < 0:
             # --- 缩容 (Scale Down) ---
             want_remove = abs(delta)
-            # [安全约束] 保证不缩减到 0
+            # [安全约束] 保证不缩减到最小值
             actual_remove = min(want_remove, current_count - self.min_instances)
 
             if actual_remove > 0:
-                # 假设 cluster.remove_instances 会处理 Graceful Shutdown
-                self.cluster.remove_instances(role=role, count=actual_remove)
-                logging.info(f"[Action] Removed {actual_remove} {role} instances")
+                # 选择负载最低的实例进行缩容
+                for _ in range(actual_remove):
+                    if len(active_instances) <= self.min_instances:
+                        break
+                    
+                    # 根据标签选择负载最低的实例
+                    if tag == "prompt":
+                        least_loaded = min(active_instances, key=lambda i: i.sched_pending_tokens)
+                    else:  # token
+                        least_loaded = min(active_instances, key=lambda i: i.sched_memory)
+                    
+                    try:
+                        # 使用全流程缩容：自动排空实例 + 移除服务器
+                        self.scaling_manager.scale_down_full(least_loaded)
+                        active_instances.remove(least_loaded)
+                        logging.info(f"[Action] Removed {tag} instance {least_loaded.instance_id}")
+                    except Exception as e:
+                        logging.error(f"[Action] Failed to remove {tag} instance: {e}")
+                        break
             else:
-                logging.warning(f"[Action Blocked] Cannot remove {role}, min limit reached")
+                logging.warning(f"[Action Blocked] Cannot remove {tag}, min limit reached")
+    
+    def _get_instance_config(self, tag):
+        """从启动状态配置获取实例配置"""
+        if hasattr(self.application, 'start_state_manager') and \
+           self.application.start_state_manager is not None:
+            return self.application.start_state_manager.get_instance_config(tag)
+        
+        # 回退到默认配置
+        logging.warning(f"[Action] No start_state_manager found, using default config")
+        class InstanceConfig:
+            def __init__(self):
+                self.instance_type = "Splitwise"
+                self.max_batch_size = 64
+                self.max_batch_tokens = 4096
+                self.max_preemptions = 3
+        
+        return InstanceConfig()
+    
+    def _get_parallelism(self, tag):
+        """从启动状态配置获取并行度"""
+        if hasattr(self.application, 'start_state_manager') and \
+           self.application.start_state_manager is not None:
+            return self.application.start_state_manager.get_parallelism(tag)
+        
+        # 回退到默认并行度
+        logging.warning(f"[Action] No start_state_manager found, using default parallelism")
+        from model import ModelParallelism
+        return ModelParallelism(pipeline_parallelism=1, tensor_parallelism=1)

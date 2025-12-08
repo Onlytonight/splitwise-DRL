@@ -9,7 +9,7 @@ from hydra.utils import instantiate
 from hydra.utils import get_original_cwd, to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
-from simulator import TraceSimulator
+from simulator import TraceSimulator, TraceRLSimulator
 from initialize import *
 
 
@@ -33,7 +33,7 @@ def run_simulation(cfg):
     for application in applications.values():
         router.add_application(application)
         arbiter.add_application(application)
-    sim = TraceSimulator(trace=trace,
+    sim = TraceRLSimulator(trace=trace,
                          cluster=cluster,
                          applications=applications,
                          router=router,

@@ -15,7 +15,7 @@ from performance_model import get_duration
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from task import Task, TaskType, TokenTask, PromptTask
 from flow import FlowType
-
+from notebooks.perf_model import PerfModel
 
 class Scheduler(ABC):
     """
@@ -52,6 +52,10 @@ class Scheduler(ABC):
         os.makedirs("schedulers", exist_ok=True)
         self.scheduler_logger = utils.file_logger(logger_name, level=level)
         self.scheduler_logger.info("time,action,info")
+        
+        # 使用相对于项目根目录的路径
+        perf_model_path = os.path.join(os.path.dirname(__file__), "data", "perf_model.csv")
+        self.perf_model = PerfModel(perf_model_path, init=True)
 
 
     @property
@@ -887,9 +891,7 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval,
               "prompt max pending batch tokens is", self.prompt_max_pending_batch_tokens)
         self.interval_ttft_stats = []  # 存储两次schedule调用间的TTFT统计
-        from notebooks.perf_model import PerfModel
-        # self.perf_model = PerfModel("D:\homework\网络\论文\LLMshedule\pd分离\splitwise-DRL\data\perf_model.csv", init=True)
-        self.perf_model = PerfModel("/home/xfusion/conda/splitwise-DRL/data/perf_model.csv", init=True)
+
 
 
     def is_memory_loaded(self, instance, tasks):

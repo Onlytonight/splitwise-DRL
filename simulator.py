@@ -212,7 +212,7 @@ def reschedule_event(*args):
     return sim.reschedule(*args)
 
 
-class TraceRLSimulator(TraceSimulator):
+class TraceRLSimulator(Simulator):
     def __init__(self,
                  trace,
                  cluster,
@@ -248,11 +248,15 @@ class TraceRLSimulator(TraceSimulator):
         )
         # 初始化奖励计算器
         self.reward_calculator = RLRewardCalculator(
-            config={},
-            max_instances=cluster.MAX_INSTANCES
+            config=rl_config,
+            max_instances=rl_config.get("max_total_instances", 100)
         )
+        
+        # 获取第一个应用（假设只有一个应用）
+        self.application = list(applications.values())[0]
+        
         self.action_executor = RLActionExecutor(
-            cluster=cluster,
+            application=self.application,
             config=rl_config  # 从配置中读取步长等参数
         )
 
@@ -275,9 +279,9 @@ class TraceRLSimulator(TraceSimulator):
         self.lr_critic = 0.001
 
         # --- 初始化 Agent ---
-        # 状态维数: 64 (stack_size=4 * feature=16)
+        # 状态维数: 80 (stack_size=4 * feature=20)
         # 动作维数: 3 (alpha_p, alpha_t, alpha_mig)
-        state_dim = 64
+        state_dim = 80
         action_dim = 3
 
         self.agent = PPO(state_dim, action_dim, self.lr_actor, self.lr_critic,
@@ -292,8 +296,13 @@ class TraceRLSimulator(TraceSimulator):
         logging.info("TraceSimulator initialized")
         self.load_trace()
 
-
-    # ... load_trace 方法保持不变 ...
+    def load_trace(self):
+        """
+        Load requests from the trace as arrival events.
+        """
+        for request in self.trace.requests:
+            self.schedule(request.arrival_timestamp,
+                          lambda request=request: self.router.request_arrival(request))
 
     def run(self):
         # start simulation by scheduling a cluster run
@@ -305,7 +314,7 @@ class TraceRLSimulator(TraceSimulator):
         # 如果设置了间隔，且大于0，则调度第一次决策
         if self.decision_interval > 0:
             logging.info(f"Starting decision cycle with interval {self.decision_interval}")
-            self.schedule(0, self.run_decision_cycle)
+            self.schedule(self.decision_interval, self.run_decision_cycle)
 
         # run simulation
         super().run()
@@ -375,3 +384,39 @@ class TraceRLSimulator(TraceSimulator):
         # 只要还没到结束时间，就安排下一次
         if current_time + self.decision_interval < self.end_time:
             self.schedule(self.decision_interval, self.run_decision_cycle)
+
+
+
+
+    def save_results(self, detailed=True):
+        """
+        Save results at the end of the simulation.
+        """
+        self.router.save_results()
+
+        sched_results = {}
+        alloc_results = {}
+        for application_id, application in self.applications.items():
+            allocator_results, scheduler_results = application.get_results()
+            alloc_results[application_id] = allocator_results
+            sched_results[application_id] = scheduler_results
+
+        # summary sched results
+        summary_results = defaultdict(list)
+        for application_id, results_dict in sched_results.items():
+            summary_results["application_id"].append(application_id)
+            for key, values in results_dict.items():
+                summary = utils.get_statistics(values)
+                # merge summary into summary_results
+                for metric, value in summary.items():
+                    summary_results[f"{key}_{metric}"].append(value)
+
+        # save summary results
+        utils.save_dict_as_csv(summary_results, "summary.csv")
+
+        if detailed:
+            # create a dataframe of all requests, save as csv
+            for application_id, result in sched_results.items():
+                utils.save_dict_as_csv(result, f"detailed/{application_id}.csv")
+            for application_id, result in alloc_results.items():
+                utils.save_dict_as_csv(result, f"detailed/{application_id}_alloc.csv")
