@@ -40,6 +40,7 @@ class Scheduler(ABC):
         self.pending_queue = []
         self.executing_queue = []
         self.completed_queue = []
+        self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
 
         # executors
         self.executor_type = ExecutorType.CentralExecutor
@@ -207,7 +208,76 @@ class Scheduler(ABC):
         success_time = [r.metrics.schedule_success_duration for r in self.completed_queue]
         array_results["success_times"] = np.array(success_time)
 
+        request_types = [r.workload_type for r in self.completed_queue]
+        array_results["request_types"] = np.array(request_types)
+
         return array_results
+
+    def get_period_result(self):
+        new_completed_count = len(self.completed_queue)
+        if new_completed_count > self.last_completed_count:
+            # 有新完成的请求
+            newly_completed_requests = self.completed_queue[self.last_completed_count:]
+
+            # 准备数据用于归一化
+            request_data = []
+            ttfts = []
+            tbts = []
+
+            for req in newly_completed_requests:
+                # 获取TTFT
+                ttft = req.metrics.TTFT
+                ttfts.append(ttft)
+
+                # 计算TBT = (总响应时间 - TTFT) / token_size
+                # 假设token_size可以从请求中获取
+                token_size = getattr(req, 'token_size', 1)  # 提供默认值以防属性不存在
+                tbt = (req.metrics.router_response_time - ttft) / token_size if token_size > 0 else 0
+                tbts.append(tbt)
+
+                # 收集数据用于归一化
+                request_data.append({
+                    'prompt_sizes': getattr(req, 'prompt_size', 0),  # 假设请求有prompt_size属性
+                    'ttft': ttft,
+                    'tbt': tbt
+                })
+
+            if request_data:
+                # 创建DataFrame并使用PerfModel进行归一化
+                request_df = pd.DataFrame(request_data)
+                normalized_df = self.perf_model.add_baseline_perf(request_df)
+
+                # 计算归一化后的TTFT和TBT
+                normalized_df['normalized_ttft'] = normalized_df['ttft'] / normalized_df['baseline_ttft']
+                normalized_df['normalized_tbt'] = normalized_df['tbt'] / normalized_df['baseline_tbt']
+
+                # 计算 normalized_ttft > 6 和 normalized_tbt > 5 的比例
+                ttft_over_6_ratio = (normalized_df['normalized_ttft'] > 6).mean()
+                tbt_over_5_ratio = (normalized_df['normalized_tbt'] > 5).mean()
+
+                # 计算归一化后的p50和p99分位数
+                p50_normalized_ttft = normalized_df['normalized_ttft'].quantile(0.5)
+                p90_normalized_ttft = normalized_df['normalized_ttft'].quantile(0.9)
+                p99_normalized_ttft = normalized_df['normalized_ttft'].quantile(0.99)
+                p50_normalized_tbt = normalized_df['normalized_tbt'].quantile(0.5)
+                p90_normalized_tbt = normalized_df['normalized_tbt'].quantile(0.9)
+                p99_normalized_tbt = normalized_df['normalized_tbt'].quantile(0.99)
+
+                # 打印统计信息
+                # print(f"Between schedules: {len(ttfts)} requests completed")
+                # print(f"Normalized TTFT - P50: {p50_normalized_ttft:.2f}, P99: {p99_normalized_ttft:.2f}")
+                # print(f"Normalized TBT - P50: {p50_normalized_tbt:.2f}, P99: {p99_normalized_tbt:.2f}")
+
+                # 返回归一化后的p50和p99分位数以及超出阈值的比例
+                self.last_completed_count = new_completed_count
+                return [p50_normalized_ttft,p90_normalized_ttft, p99_normalized_ttft], [p50_normalized_tbt,
+                        p90_normalized_tbt,p99_normalized_tbt],[ttft_over_6_ratio,tbt_over_5_ratio]
+
+            self.last_completed_count = new_completed_count
+
+        # 如果没有新完成的请求，返回0
+        return 0, 0, 0, 0, 0
+
 
 
 class KVScheduler(Scheduler):
@@ -816,7 +886,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         self.adjust_interval = 1
         print("AdaptiveMixedPoolScheduler initialized,adjust interval is", self.adjust_interval,
               "prompt max pending batch tokens is", self.prompt_max_pending_batch_tokens)
-        self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
         self.interval_ttft_stats = []  # 存储两次schedule调用间的TTFT统计
         from notebooks.perf_model import PerfModel
         # self.perf_model = PerfModel("D:\homework\网络\论文\LLMshedule\pd分离\splitwise-DRL\data\perf_model.csv", init=True)
@@ -1153,7 +1222,10 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         # 设置调整阈值，可根据实际情况调整
         adjust_threshold = 5  # 当一个指标是另一个的1.5倍以上时进行调整
-        p50_normalized_ttft,_, p50_normalized_tbt,_ = self.get_period_result()
+        p50_normalized_ttft, p50_normalized_tbt = self.get_period_result()
+        p50_normalized_ttft = p50_normalized_ttft[0]
+        p50_normalized_tbt = p50_normalized_tbt[0]
+
         # 确保两个指标都有效(不为0)
         if p50_normalized_ttft > 0 and p50_normalized_tbt > 0:
             # 计算TTFT与TBT的比值
@@ -1180,63 +1252,6 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
             print(f"TTFT ({p50_normalized_ttft:.2f}) 和 TBT ({p50_normalized_tbt:.2f}) 平衡，无需转换实例")
             return None
 
-    def get_period_result(self):
-        new_completed_count = len(self.completed_queue)
-        if new_completed_count > self.last_completed_count:
-            # 有新完成的请求
-            newly_completed_requests = self.completed_queue[self.last_completed_count:]
-
-            # 准备数据用于归一化
-            request_data = []
-            ttfts = []
-            tbts = []
-
-            for req in newly_completed_requests:
-                # 获取TTFT
-                ttft = req.metrics.TTFT
-                ttfts.append(ttft)
-
-                # 计算TBT = (总响应时间 - TTFT) / token_size
-                # 假设token_size可以从请求中获取
-                token_size = getattr(req, 'token_size', 1)  # 提供默认值以防属性不存在
-                tbt = (req.metrics.router_response_time - ttft) / token_size if token_size > 0 else 0
-                tbts.append(tbt)
-
-                # 收集数据用于归一化
-                request_data.append({
-                    'prompt_sizes': getattr(req, 'prompt_size', 0),  # 假设请求有prompt_size属性
-                    'ttft': ttft,
-                    'tbt': tbt
-                })
-
-            if request_data:
-                # 创建DataFrame并使用PerfModel进行归一化
-                request_df = pd.DataFrame(request_data)
-                normalized_df = self.perf_model.add_baseline_perf(request_df)
-
-                # 计算归一化后的TTFT和TBT
-                normalized_df['normalized_ttft'] = normalized_df['ttft'] / normalized_df['baseline_ttft']
-                normalized_df['normalized_tbt'] = normalized_df['tbt'] / normalized_df['baseline_tbt']
-
-                # 计算归一化后的p50和p99分位数
-                p50_normalized_ttft = normalized_df['normalized_ttft'].quantile(0.5)
-                p99_normalized_ttft = normalized_df['normalized_ttft'].quantile(0.99)
-                p50_normalized_tbt = normalized_df['normalized_tbt'].quantile(0.5)
-                p99_normalized_tbt = normalized_df['normalized_tbt'].quantile(0.99)
-
-                # 打印统计信息
-                # print(f"Between schedules: {len(ttfts)} requests completed")
-                # print(f"Normalized TTFT - P50: {p50_normalized_ttft:.2f}, P99: {p99_normalized_ttft:.2f}")
-                # print(f"Normalized TBT - P50: {p50_normalized_tbt:.2f}, P99: {p99_normalized_tbt:.2f}")
-
-                # 返回归一化后的p50和p99分位数
-                self.last_completed_count = new_completed_count
-                return p50_normalized_ttft, p99_normalized_ttft, p50_normalized_tbt, p99_normalized_tbt
-
-            self.last_completed_count = new_completed_count
-
-        # 如果没有新完成的请求，返回0
-        return 0, 0, 0, 0
 
 
 class LyapunovScheduler(MixedPoolScheduler):
