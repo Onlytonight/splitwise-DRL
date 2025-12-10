@@ -71,13 +71,19 @@ class Router(ABC):
         Calculate average prompt length of newly completed requests since last record
         """
         arrivals = self.total_arrivals - self.last_recorded_arrival
+
+        if arrivals == 0:
+            print(arrivals,'print(arrivals)')
+            # Avoid division by zero
+            return 0, 0, 0
+            
         avg_prompt_len = self.new_request_prompt_size_record / arrivals
         avg_output_len = self.new_request_token_size_record / arrivals
 
-        self.new_request_prompt_size_record=0
-        self.new_request_token_size_record=0
+        self.new_request_prompt_size_record = 0
+        self.new_request_token_size_record = 0
         self.last_recorded_arrival = self.total_arrivals
-        return avg_prompt_len,avg_output_len,arrivals
+        return avg_prompt_len, avg_output_len, arrivals
 
 
     def save_results(self):

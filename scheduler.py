@@ -280,7 +280,7 @@ class Scheduler(ABC):
             self.last_completed_count = new_completed_count
 
         # 如果没有新完成的请求，返回0
-        return 0, 0, 0, 0, 0
+        return [0,0,0], [0,0,0], [0,0]
 
 
 
@@ -849,10 +849,8 @@ class MixedPoolScheduler(KVScheduler):
         # bookkeeping
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
-        print("prompt instance num is", len(self.prompt_instances), ",token instance num is",
-              len(self.token_instances), "mixed instance num is", len(self.mixed_instances))
-
-
+        # print("prompt instance num is", len(self.prompt_instances), ",token instance num is",
+        #       len(self.token_instances), "mixed instance num is", len(self.mixed_instances))
 
 
 

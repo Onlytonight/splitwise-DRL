@@ -1,9 +1,12 @@
 import heapq
 import logging
+import os
+import random
 from collections import defaultdict
+
 import utils
 from RL.state import RLStateCollector
-from RL.reward import RLRewardCalculator
+from RL.reward import RLRewardCalculator,RewardRecorder
 from RL.action import RLActionExecutor
 from RL.PPO import PPO
 # global simulator that drives the simulation
@@ -318,7 +321,10 @@ class TraceRLSimulator(Simulator):
 
         # run simulation
         super().run()
-        # ... 后续代码不变 ...
+        self.logger.info(f"{self.time},end")
+        logging.info(f"TraceSimulator completed at {self.time}")
+
+        self.save_results()
 
     # [核心] 定义决策周期函数
     def run_decision_cycle(self):
@@ -330,7 +336,7 @@ class TraceRLSimulator(Simulator):
         # ---------------------------------------------------------
         # 1. 状态收集 (State Collection)
         # ---------------------------------------------------------
-        state, raw_stats,instance_num = self.rl_collector.get_state_and_stats(
+        state, raw_stats,instance_num,rps = self.rl_collector.get_state_and_stats(
             self.time, self.decision_interval
         )
         logging.debug(f"RL Decision Triggered at time {current_time}")
@@ -348,6 +354,11 @@ class TraceRLSimulator(Simulator):
             # self.agent.store_transition(self.last_observation, self.last_action, reward, state)
             self.agent.buffer.rewards.append(reward)
             self.agent.buffer.is_terminals.append(False)
+
+            # 记录奖励到CSV文件
+            if not hasattr(self, 'reward_recorder'):
+                self.reward_recorder = RewardRecorder("reward.csv")
+            self.reward_recorder.record_reward(self.decision_step, info)
 
             # 日志记录 (非常重要)
             if self.decision_step % 100 == 0:
@@ -382,11 +393,8 @@ class TraceRLSimulator(Simulator):
         # 4. [关键] 递归调度下一次决策
         # ---------------------------------------------------------
         # 只要还没到结束时间，就安排下一次
-        if current_time + self.decision_interval < self.end_time:
+        if current_time + self.decision_interval < self.end_time and rps > 0:
             self.schedule(self.decision_interval, self.run_decision_cycle)
-
-
-
 
     def save_results(self, detailed=True):
         """

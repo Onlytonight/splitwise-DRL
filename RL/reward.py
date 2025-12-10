@@ -1,6 +1,8 @@
 import numpy as np
 import logging
-
+import csv
+import os
+from collections import defaultdict
 
 class RLRewardCalculator:
     def __init__(self,
@@ -22,9 +24,11 @@ class RLRewardCalculator:
 
         # 2. 硬件成本参数
         self.price_p = 1.0  # Prefill 机器 (基准价格)
-        self.price_t = price_ratio_token  # Decoding 机器 (通常较便宜)
+        # self.price_t = price_ratio_token  # Decoding 机器 (通常较便宜)
+        self.price_t = 1.0  # 假设都是用同样的机器
         self.price_m = 1.0  # Mixed 机器 (通常假设等同于昂贵机器)
         self.max_instances = max_instances
+        self.is_first_step = True
 
         # 3. 状态记忆 (用于计算切换成本)
         self.last_instances = {'p': 0, 't': 0, 'm': 0}
@@ -62,13 +66,17 @@ class RLRewardCalculator:
 
         # --- C. 切换成本项 (Stability) ---
         # 目标：抑制机器数量剧烈抖动
-        delta_p = abs(n_p - self.last_instances['p'])
-        delta_t = abs(n_t - self.last_instances['t'])
-        delta_m = abs(n_m - self.last_instances['m'])
+        if self.is_first_step:
+            self.is_first_step = False
+            switch_penalty = 0.0
+        else:
+            delta_p = abs(n_p - self.last_instances['p'])
+            delta_t = abs(n_t - self.last_instances['t'])
+            delta_m = abs(n_m - self.last_instances['m'])
 
-        # 归一化切换量 (假设一次最多变动 10 台)
-        total_delta = delta_p + delta_t + delta_m
-        switch_penalty = -(total_delta / 10.0)
+            # 归一化切换量 (假设一次最多变动 10 台)
+            total_delta = delta_p + delta_t + delta_m
+            switch_penalty = -(total_delta / 10.0)
 
         # 更新历史
         self.last_instances = {'p': n_p, 't': n_t, 'm': n_m}
@@ -111,3 +119,38 @@ class RLRewardCalculator:
     def reset(self):
         """重置内部状态 (每个 Episode 开始时调用)"""
         self.last_instances = {'p': 0, 't': 0, 'm': 0}
+
+class RewardRecorder:
+
+
+    def __init__(self, filename="reward.csv"):
+        self.filename = filename
+        self.fieldnames = ["step", "total_reward", "cost_penalty", "slo_penalty", "switch_penalty", "util_reward"]
+        self._initialize_csv()
+
+    def _initialize_csv(self):
+        """Initialize the CSV file with headers if it doesn't exist"""
+        if not os.path.exists(self.filename):
+            with open(self.filename, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
+                writer.writeheader()
+
+    def record_reward(self, step, info_dict):
+        """
+        Record reward components to CSV file
+
+        :param step: Current decision step
+        :param info_dict: Dictionary containing reward components from RLRewardCalculator
+        """
+        row_data = {
+            "step": step,
+            "total_reward": info_dict.get("reward_total", 0),
+            "cost_penalty": info_dict.get("pen_cost", 0),
+            "slo_penalty": info_dict.get("pen_slo", 0),
+            "switch_penalty": info_dict.get("pen_switch", 0),
+            "util_reward": info_dict.get("rew_util", 0)
+        }
+
+        with open(self.filename, 'a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
+            writer.writerow(row_data)

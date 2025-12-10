@@ -121,7 +121,7 @@ class RLStateCollector:
             'completed_tokens': curr_tokens,
         })
 
-        return np.array(snapshot, dtype=np.float32),[n_p, n_t, n_m,util_p,util_d,net_util],vio_slo_rate
+        return np.array(snapshot, dtype=np.float32),[n_p, n_t, n_m,util_p,util_d,net_util],vio_slo_rate,rps
 
     def _normalize(self, raw_vector):
         """
@@ -176,7 +176,7 @@ class RLStateCollector:
 
     def get_state_and_stats(self, current_time, interval):
         # 1. 收集原始快照
-        raw_snapshot,instance_num,vio_SLO = self._collect_snapshot(current_time, interval)
+        raw_snapshot,instance_num,vio_SLO,rps = self._collect_snapshot(current_time, interval)
 
         # 从 raw_snapshot 中提取需要的统计量传给 Reward 函数
         # stats = raw_snapshot[14:]
@@ -186,7 +186,7 @@ class RLStateCollector:
         self.state_buffer.append(normalized)
         stacked_state = np.concatenate(self.state_buffer)
 
-        return stacked_state, vio_SLO,instance_num
+        return stacked_state, vio_SLO,instance_num,rps
 
     def get_instance_feature(self):
         # 获取第一个应用的调度器
