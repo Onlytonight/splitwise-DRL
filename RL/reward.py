@@ -55,10 +55,10 @@ class RLRewardCalculator:
         cost_penalty = -(current_cost / max_possible_cost)
 
         # --- B. SLO 惩罚项 (Performance) ---
-        # 目标：违约率越低越好。使用平方惩罚，对严重违约重拳出击。
+        # 目标：违约率越低越好。使用平方惩罚，对严重违约重拳出击。超过0.01才惩罚
         # interval_stats 来自 StateCollector，包含 'ttft_rate' 和 'tbt_rate'
-        ttft_vio_rate = interval_stats[0]
-        tbt_vio_rate = interval_stats[1]
+        ttft_vio_rate = max(0,interval_stats[0]-0.01)
+        tbt_vio_rate = max(0,interval_stats[1]-0.01)
 
         # 重点惩罚 TBT (因为 Splitwise 中 Token Phase 是长尾)
         # 示例: 10% 违约率 -> 0.1^2 = 0.01; 50% 违约率 -> 0.25 (惩罚激增)

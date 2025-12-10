@@ -4,7 +4,7 @@
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/venv" />
     </content>
-    <orderEntry type="jdk" jdkName="splitwise-sim" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Remote Python 3.11.14 (sftp://xfusion@192.168.10.18:22/home/xfusion/anaconda3/envs/splitwise-sim/bin/python3)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="module" module-name="云边" />
   </component>

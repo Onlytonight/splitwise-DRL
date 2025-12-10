@@ -37,7 +37,7 @@ def generate_long_rps_trace(
         
         # First half of cycle: ascending rates (10 to 150)
         for i, request_rate in enumerate(ascending_rates):
-            print(f"  Generating segment with rate {request_rate} for {segment_duration}s")
+            # print(f"  Generating segment with rate {request_rate} for {segment_duration}s")
             
             # Generate trace for this request rate and segment
             trace_df = generate_trace_from_prompt_token_size_distributions(
@@ -62,7 +62,7 @@ def generate_long_rps_trace(
             
         # Second half of cycle: descending rates (150 to 10)
         for i, request_rate in enumerate(descending_rates):
-            print(f"  Generating segment with rate {request_rate} for {segment_duration}s")
+            # print(f"  Generating segment with rate {request_rate} for {segment_duration}s")
             
             # Generate trace for this request rate and segment
             trace_df = generate_trace_from_prompt_token_size_distributions(
@@ -107,7 +107,7 @@ if __name__ == "__main__":
         os.makedirs(traces_dir)
     
     # Download Azure LLM traces if needed
-    download_azure_llm_traces()
+    # download_azure_llm_traces()
     
     # Generate combined trace with changing request rates
     # 900s per cycle, 60s per segment, 10 cycles

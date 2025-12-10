@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.10 (splitwise-DRL)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="splitwise-sim" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.11.14 (sftp://xfusion@192.168.10.18:22/home/xfusion/anaconda3/envs/splitwise-sim/bin/python3)" project-jdk-type="Python SDK" />
 </project>
