@@ -111,7 +111,7 @@ if __name__ == "__main__":
     
     # Generate combined trace with changing request rates
     # 900s per cycle, 60s per segment, 10 cycles
-    segment_duration = 30  # seconds per rate
+    segment_duration = 10  # seconds per rate
     max_requests_per_segment = 80000  # Limit requests per segment
     cycles = 50  # Number of cycles
     

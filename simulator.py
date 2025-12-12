@@ -229,7 +229,7 @@ class TraceRLSimulator(Simulator):
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
-        self.decision_interval = 10  # 保存间隔
+        self.decision_interval = 5  # 保存间隔
 
         rl_config = {
             "w_cost": 0.7,
