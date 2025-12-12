@@ -32,6 +32,7 @@ class RLRewardCalculator:
 
         # 3. 状态记忆 (用于计算切换成本)
         self.last_instances = {'p': 0, 't': 0, 'm': 0}
+        self.last_action_sign = 0 # 记录上一次是加还是减
 
     def calculate_reward(self, cluster, applications, interval_stats,instance_num):
         """
@@ -51,21 +52,25 @@ class RLRewardCalculator:
         current_cost = (n_p * self.price_p + n_t * self.price_t + n_m * self.price_m)
         max_possible_cost = self.max_instances * 1.0
 
-        # 成本惩罚 (0 ~ -1 之间)
-        cost_penalty = -(current_cost / max_possible_cost)
+        # 成本惩罚 (0 ~ -1 之间) - 改为指数衰减
+        cost_penalty = -(np.exp(current_cost / max_possible_cost) - 1) / (np.e - 1)
 
-        # --- B. SLO 惩罚项 (Performance) ---
-        # 目标：违约率越低越好。使用平方惩罚，对严重违约重拳出击。超过0.01才惩罚
+        # --- B. SLO 奖励项 (Performance) ---
+        # 目标：合规率越高越好。使用指数奖励，对高合规率给予更高奖励。低于99%才开始扣分
         # interval_stats 来自 StateCollector，包含 'ttft_rate' 和 'tbt_rate'
-        ttft_vio_rate = max(0,interval_stats[0]-0.01)
-        tbt_vio_rate = max(0,interval_stats[1]-0.01)
+        ttft_compliance_rate = max(0, 0.99 - interval_stats[0]) / 0.99  # 0.99为基准合规率
+        tbt_compliance_rate = max(0, 0.99 - interval_stats[1]) / 0.99   # 0.99为基准合规率
 
-        # 重点惩罚 TBT (因为 Splitwise 中 Token Phase 是长尾)
-        # 示例: 10% 违约率 -> 0.1^2 = 0.01; 50% 违约率 -> 0.25 (惩罚激增)
-        slo_penalty = -(0.4 * (ttft_vio_rate ** 2) + 0.6 * (tbt_vio_rate ** 2))
+        # 指数奖励 TBT (因为 Splitwise 中 Token Phase 是长尾)
+        # 合规率越高，奖励越高 (0~1)
+        # 标准化 SLO 奖励到 0~1 范围内
+        slo_reward = (np.exp(0.4 * ttft_compliance_rate + 0.6 * tbt_compliance_rate) - 1) / (np.e - 1)
+        
+        
 
         # --- C. 切换成本项 (Stability) ---
         # 目标：抑制机器数量剧烈抖动
+        delta_total = 0
         if self.is_first_step:
             self.is_first_step = False
             switch_penalty = 0.0
@@ -73,11 +78,22 @@ class RLRewardCalculator:
             delta_p = abs(n_p - self.last_instances['p'])
             delta_t = abs(n_t - self.last_instances['t'])
             delta_m = abs(n_m - self.last_instances['m'])
-
-            # 归一化切换量 (假设一次最多变动 10 台)
+            
+            delta_total = delta_p + delta_t + delta_m
+            current_action_sign = np.sign(delta_total)
+            hysteresis_penalty = 0
+            # 如果上一步不为0，这一步也不为0，且方向相反
+            if self.last_action_sign != 0 and current_action_sign != 0:
+                if self.last_action_sign != current_action_sign:
+                    # 触发重罚！罚分是普通 switch 的 10 倍
+                    hysteresis_penalty = -5.0         
+            self.last_action_sign = current_action_sign
+            
+            # 归一化切换量 (假设一次最多变动 10 台) - 改为指数衰减
             total_delta = delta_p + delta_t + delta_m
-            switch_penalty = -(total_delta / 10.0)
+            switch_penalty = -(np.exp(total_delta / 10.0) - 1) / (np.e - 1) + hysteresis_penalty
 
+            
         # 更新历史
         self.last_instances = {'p': n_p, 't': n_t, 'm': n_m}
 
@@ -88,18 +104,19 @@ class RLRewardCalculator:
 
         def utilization_bonus(u):
             # 一个倒 U 型函数，在 0.7 处达到峰值 1.0
-            # 简单实现：1 - |u - 0.7|
-            return 1.0 - abs(u - 0.7)
+            # 改为指数形式以增强敏感度
+            return np.exp(1.0 - abs(u - 0.7)) / np.e
 
         util_reward = 0.3 * utilization_bonus(util_p) + 0.3 * utilization_bonus(util_d)+ 0.3 * utilization_bonus(util_m)
 
         # --- E. 总奖励聚合 ---
-        # 注意：Switch 和 SLO 是负值，Util 是正值
+        # 注意：Cost 和 Switch 是负值，SLO 和 Util 是正值
+        # 标准化各组件值到相似范围，保持符号不变
         total_reward = (
                 self.w_cost * cost_penalty +
-                self.w_slo * slo_penalty +
-                self.w_switch * switch_penalty +
-                self.w_util * util_reward
+                self.w_slo * slo_reward 
+                # self.w_switch * switch_penalty +
+                # self.w_util * util_reward
         )
 
         # 返回详细信息用于 Debug (这对 RL 调参至关重要！)
@@ -107,11 +124,13 @@ class RLRewardCalculator:
             "reward_total": total_reward,
             "raw_cost": current_cost,
             "pen_cost": self.w_cost * cost_penalty,
-            "pen_slo": self.w_slo * slo_penalty,
+            "rew_slo": self.w_slo * slo_reward,
             "pen_switch": self.w_switch * switch_penalty,
             "rew_util": self.w_util * util_reward,
-            "ttft_vio": ttft_vio_rate,
-            "tbt_vio": tbt_vio_rate
+            "ttft_compliance": ttft_compliance_rate,
+            "tbt_compliance": tbt_compliance_rate,
+            "delta_total": delta_total,
+            "util_avg": (util_p + util_d + util_m) / 3
         }
 
         return total_reward, info
@@ -123,14 +142,15 @@ class RLRewardCalculator:
 class RewardRecorder:
 
 
-    def __init__(self, filename="reward.csv"):
+    def __init__(self, filename="reward.csv", clear_file=True):
         self.filename = filename
-        self.fieldnames = ["step", "total_reward", "cost_penalty", "slo_penalty", "switch_penalty", "util_reward"]
-        self._initialize_csv()
+        self.fieldnames = ["step", "total_reward", "cost_penalty", "slo_reward", "switch_penalty", "util_reward", "raw_cost", "ttft_compliance", "tbt_compliance", "delta_total", "util_avg"]
+        self._initialize_csv(clear_file)
 
-    def _initialize_csv(self):
-        """Initialize the CSV file with headers if it doesn't exist"""
-        if not os.path.exists(self.filename):
+    def _initialize_csv(self, clear_file=True):
+        """Initialize the CSV file with headers"""
+        # 如果需要清空文件或者文件不存在，则重新创建文件并写入表头
+        if clear_file or not os.path.exists(self.filename):
             with open(self.filename, 'w', newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
                 writer.writeheader()
@@ -146,11 +166,17 @@ class RewardRecorder:
             "step": step,
             "total_reward": info_dict.get("reward_total", 0),
             "cost_penalty": info_dict.get("pen_cost", 0),
-            "slo_penalty": info_dict.get("pen_slo", 0),
+            "slo_reward": info_dict.get("rew_slo", 0),
             "switch_penalty": info_dict.get("pen_switch", 0),
-            "util_reward": info_dict.get("rew_util", 0)
+            "util_reward": info_dict.get("rew_util", 0),
+            "raw_cost": info_dict.get("raw_cost", 0),
+            "ttft_compliance": info_dict.get("ttft_compliance", 0),
+            "tbt_compliance": info_dict.get("tbt_compliance", 0),
+            "delta_total": info_dict.get("delta_total", 0),
+            "util_avg": info_dict.get("util_avg", 0),
         }
 
+        # 使用追加模式写入数据
         with open(self.filename, 'a', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
             writer.writerow(row_data)

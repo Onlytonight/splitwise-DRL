@@ -130,7 +130,7 @@ class ScalingManager:
             tag=tag
         )
         
-        print(f"[ScalingManager] Full scale-up: server {server.server_id} + instance {instance.instance_id}")
+        # print(f"[ScalingManager] Full scale-up: server {server.server_id} + instance {instance.instance_id}")
         
         return server, instance
     
@@ -152,7 +152,7 @@ class ScalingManager:
         # 注册回调，在实例缩容完成后缩容服务器
         self._pending_server_scale_downs[instance.instance_id] = instance_servers
         
-        print(f"[ScalingManager] Full scale-down initiated: instance {instance.instance_id}")
+        # print(f"[ScalingManager] Full scale-down initiated: instance {instance.instance_id}")
     
     def scale_up_instance(self, instance_cfg, processors, parallelism, tag=None):
         """
@@ -201,7 +201,7 @@ class ScalingManager:
         self.logger.info("%s,scale_up_complete,instance_%s,%s", 
                         clock(), instance.instance_id, InstanceStatus.ACTIVE.value)
         
-        print(f"[ScalingManager] Instance {instance.instance_id} scaled up at {clock():.2f}")
+        # print(f"[ScalingManager] Instance {instance.instance_id} scaled up at {clock():.2f}")
     
     def scale_down_instance(self, instance):
         """
@@ -225,7 +225,7 @@ class ScalingManager:
         self.logger.info("%s,scale_down_start,instance_%s,%s", 
                         clock(), instance.instance_id, InstanceStatus.DRAINING.value)
         
-        print(f"[ScalingManager] Instance {instance.instance_id} draining started at {clock():.2f}")
+        # print(f"[ScalingManager] Instance {instance.instance_id} draining started at {clock():.2f}")
         
         # 开始检查排空状态
         self._check_drain_status(instance)
@@ -285,7 +285,7 @@ class ScalingManager:
         self.logger.info("%s,scale_down_complete,instance_%s,%s", 
                         clock(), instance_id, InstanceStatus.SCALING_DOWN.value)
         
-        print(f"[ScalingManager] Instance {instance_id} scaled down at {clock():.2f}")
+        # print(f"[ScalingManager] Instance {instance_id} scaled down at {clock():.2f}")
         
         # 如果是全流程缩容，检查是否需要缩容服务器
         if instance_id in self._pending_server_scale_downs:
@@ -297,7 +297,7 @@ class ScalingManager:
                 # 检查服务器是否还有其他实例
                 if len(server.instances) == 0:
                     self.scale_down_server(server)
-                    print(f"[ScalingManager] Auto scale-down server {server.server_id} after instance removal")
+                    # print(f"[ScalingManager] Auto scale-down server {server.server_id} after instance removal")
                 else:
                     print(f"[ScalingManager] Server {server.server_id} still has {len(server.instances)} instances, skipping scale-down")
     
@@ -346,7 +346,7 @@ class ScalingManager:
         self.server_status[server.server_id] = ServerStatus.ACTIVE
         self.scaling_up_servers.remove(server)
         
-        print(f"[ScalingManager] Server {server.server_id} scaled up at {clock():.2f}")
+        # print(f"[ScalingManager] Server {server.server_id} scaled up at {clock():.2f}")
         
         return server
     
@@ -376,7 +376,7 @@ class ScalingManager:
         self.logger.info("%s,scale_down_server,server_%s,%s", 
                         clock(), server.server_id, ServerStatus.SCALING_DOWN.value)
         
-        print(f"[ScalingManager] Server {server.server_id} scaled down at {clock():.2f}")
+        # print(f"[ScalingManager] Server {server.server_id} scaled down at {clock():.2f}")
     
     def get_status_summary(self):
         """

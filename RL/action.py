@@ -90,12 +90,13 @@ class RLActionExecutor:
                             tag=tag,
                             server_sku=None  # 使用默认 SKU
                         )
-                        logging.info(f"[Action] Added {tag} instance {instance.instance_id} on server {server.server_id}")
+                        # logging.info(f"[Action] Added {tag} instance {instance.instance_id} on server {server.server_id}")
                     except Exception as e:
                         logging.error(f"[Action] Failed to add {tag} instance: {e}")
                         break
             else:
-                logging.warning(f"[Action Blocked] Max cluster size reached ({self.max_total_instances})")
+                # logging.warning(f"[Action Blocked] Max cluster size reached ({self.max_total_instances})")
+                pass
 
         elif delta < 0:
             # --- 缩容 (Scale Down) ---
@@ -119,12 +120,13 @@ class RLActionExecutor:
                         # 使用全流程缩容：自动排空实例 + 移除服务器
                         self.scaling_manager.scale_down_full(least_loaded)
                         active_instances.remove(least_loaded)
-                        logging.info(f"[Action] Removed {tag} instance {least_loaded.instance_id}")
+                        # logging.info(f"[Action] Removed {tag} instance {least_loaded.instance_id}")
                     except Exception as e:
                         logging.error(f"[Action] Failed to remove {tag} instance: {e}")
                         break
             else:
-                logging.warning(f"[Action Blocked] Cannot remove {tag}, min limit reached")
+                # logging.warning(f"[Action Blocked] Cannot remove {tag}, min limit reached")
+                pass
     
     def _get_instance_config(self, tag):
         """从启动状态配置获取实例配置"""

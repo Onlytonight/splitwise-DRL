@@ -29,8 +29,8 @@ def generate_long_rps_trace(
     current_time_offset = 0
     
     # Define request rates for ascending and descending phases
-    ascending_rates = list(range(10, 151, 10))  # 10, 20, ..., 140, 150
-    descending_rates = list(range(150, 9, -10))  # 150, 140, ..., 20, 10
+    ascending_rates = list(range(10, 101, 10))  # 10, 20, ..., 140, 150
+    descending_rates = list(range(100, 9, -10))  # 150, 140, ..., 20, 10
     
     for cycle in range(cycles):
         print(f"Generating cycle {cycle + 1}/{cycles}")
@@ -51,8 +51,8 @@ def generate_long_rps_trace(
             trace_df['arrival_timestamp'] += current_time_offset
             
             # Add columns to identify the rate and cycle
-            trace_df['request_rate'] = request_rate
-            trace_df['cycle'] = cycle + 1
+            # trace_df['request_rate'] = request_rate
+            # trace_df['cycle'] = cycle + 1
             
             # Add to our list
             all_dfs.append(trace_df)
@@ -76,8 +76,8 @@ def generate_long_rps_trace(
             trace_df['arrival_timestamp'] += current_time_offset
             
             # Add columns to identify the rate and cycle
-            trace_df['request_rate'] = request_rate
-            trace_df['cycle'] = cycle + 1
+            # trace_df['request_rate'] = request_rate
+            # trace_df['cycle'] = cycle + 1
             
             # Add to our list
             all_dfs.append(trace_df)
@@ -111,9 +111,9 @@ if __name__ == "__main__":
     
     # Generate combined trace with changing request rates
     # 900s per cycle, 60s per segment, 10 cycles
-    segment_duration = 60  # seconds per rate
-    max_requests_per_segment = 50000  # Limit requests per segment
-    cycles = 10  # Number of cycles
+    segment_duration = 30  # seconds per rate
+    max_requests_per_segment = 80000  # Limit requests per segment
+    cycles = 50  # Number of cycles
     
     # Generate for code distributions
     code_combined_trace = generate_long_rps_trace(
@@ -125,12 +125,12 @@ if __name__ == "__main__":
     )
     
     # Generate for conv distributions
-    conv_combined_trace = generate_long_rps_trace(
-        max_requests_per_segment=max_requests_per_segment,
-        segment_duration=segment_duration,
-        cycles=cycles,
-        pt_distributions_file="data/conv_distributions.csv",
-        output_file=os.path.join(traces_dir, "long_rps_conv_combined.csv")
-    )
+    # conv_combined_trace = generate_long_rps_trace(
+    #     max_requests_per_segment=max_requests_per_segment,
+    #     segment_duration=segment_duration,
+    #     cycles=cycles,
+    #     pt_distributions_file="data/conv_distributions.csv",
+    #     output_file=os.path.join(traces_dir, "long_rps_conv_combined.csv")
+    # )
     
     print("All combined traces generated successfully!")

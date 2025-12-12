@@ -231,6 +231,7 @@ class RLStateCollector:
             n_p = len(scheduler.prompt_instances)
             n_t = len(scheduler.token_instances)
             n_m = len(getattr(scheduler, 'mixed_instances', []))
+        # print(f"n_p: {n_p}, n_t: {n_t}, n_m: {n_m}")
             
         return total_pending_prompt_queue_length, total_pending_tokens, total_time/instance_len, \
                n_p, n_t, n_m, total_memory/instance_len

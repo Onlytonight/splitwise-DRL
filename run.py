@@ -2,7 +2,7 @@ import logging
 import os
 import random
 import sys
-
+import time
 import hydra
 
 from hydra.utils import instantiate
@@ -55,6 +55,7 @@ def run(cfg: DictConfig) -> None:
     #print(OmegaConf.to_yaml(hydra_cfg, resolve=False))
 
     # initialize random number generator
+    start_time = time.time()
     random.seed(cfg.seed)
 
     # delete existing oom.csv if any
@@ -62,7 +63,9 @@ def run(cfg: DictConfig) -> None:
         os.remove("oom.csv")
 
     run_simulation(cfg)
-
+    end_time = time.time()
+    execution_time = end_time - start_time
+    print(f"Execution time: {execution_time:.2f} seconds")
 
 if __name__ == "__main__":
     run()

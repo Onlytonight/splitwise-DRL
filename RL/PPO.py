@@ -1,3 +1,7 @@
+import os
+import sys
+os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
+
 import torch
 import torch.nn as nn
 from torch.distributions import MultivariateNormal
@@ -113,15 +117,15 @@ class ActorCritic(nn.Module):
 class PPO:
     def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
                  has_continuous_action_space, action_std_init=0.6):
-
+        
         self.has_continuous_action_space = has_continuous_action_space
 
-        self.device = torch.device('cpu')
         if (torch.cuda.is_available()):
-            device = torch.device('cuda:0')
+            self.device = torch.device('cuda:0')
             torch.cuda.empty_cache()
-            print("Device set to : " + str(torch.cuda.get_device_name(device)))
+            print("Device set to : " + str(torch.cuda.get_device_name(self.device)))
         else:
+            self.device = torch.device('cpu')   
             print("Device set to : cpu")
 
         if has_continuous_action_space:

@@ -1,0 +1,83 @@
+/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/parameter.py:4: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+[2025-12-12 15:17:47,421][HYDRA] Ray Launcher is launching 1 jobs, sweep output dir: .
+[2025-12-12 15:17:47,421][HYDRA] Initializing ray with config: {'address': '127.0.0.1:6379', 'object_store_memory': None}
+2025-12-12 15:17:47,422	INFO worker.py:1431 -- Connecting to existing Ray cluster at address: 192.168.10.18:6379...
+2025-12-12 15:17:47,428	INFO worker.py:1612 -- Connected to Ray cluster. View the dashboard at [1m[32mhttp://127.0.0.1:8265 [39m[22m
+[2025-12-12 15:17:47,442][HYDRA] 	#0 : applications.0.scheduler=mixed_pool cluster=half_half cluster.servers.0.count=0 cluster.servers.1.count=2 start_state=splitwise start_state.prompt.num_instances=1 start_state.token.num_instances=1 performance_model=db trace.filename=rl_training_mixed_v2 seed=0
+[2m[33m(raylet)[0m /home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/parameter.py:4: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+[2m[33m(raylet)[0m   import pkg_resources
+[2m[33m(raylet)[0m /home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/parameter.py:4: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+[2m[33m(raylet)[0m   import pkg_resources
+[2m[36m(_run_job pid=2678279)[0m /home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/torch/cuda/__init__.py:611: UserWarning: Can't initialize NVML
+[2m[36m(_run_job pid=2678279)[0m   warnings.warn("Can't initialize NVML")
+[2m[36m(_run_job pid=2678279)[0m trace path is /home/xfusion/conda/splitwise-DRL/traces//rl_training_mixed_v2.csv
+[2m[36m(_run_job pid=2678279)[0m trace is <trace.Trace object at 0x7df310f7a710>
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:18:27,089][root][INFO] - Simulator initialized
+[2m[36m(_run_job pid=2678279)[0m Device set to : NVIDIA GeForce RTX 4090
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:18:27,499][root][INFO] - TraceSimulator initialized
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:18:29,456][root][INFO] - Starting decision cycle with interval 10
+[2m[36m(_run_job pid=2678279)[0m --------------------------------------------------------------------------------------------
+[2m[36m(_run_job pid=2678279)[0m setting actor output action_std to :  0.55
+[2m[36m(_run_job pid=2678279)[0m --------------------------------------------------------------------------------------------
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:18:29,577][root][INFO] - Decayed action std to 0.55
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:18:38,613][root][INFO] - Step: 10 | Reward: 0.0029 | Cost: 22.00
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:19:01,108][root][INFO] - Step: 20 | Reward: 0.2859 | Cost: 43.00
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:19:28,715][root][INFO] - Step: 30 | Reward: 0.3428 | Cost: 46.00
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:20:18,942][root][INFO] - Step: 40 | Reward: 0.3381 | Cost: 39.00
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:21:11,527][root][INFO] - Step: 50 | Reward: 0.2953 | Cost: 54.00
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:22:23,268][root][INFO] - Step: 60 | Reward: 0.3061 | Cost: 57.00
+[2m[36m(_run_job pid=2678279)[0m [2025-12-12 15:23:48,701][root][INFO] - Step: 70 | Reward: 0.2365 | Cost: 73.00
+Traceback (most recent call last):
+  File "/home/xfusion/conda/splitwise-DRL/run.py", line 71, in <module>
+    run()
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra/main.py", line 94, in decorated_main
+    _run_hydra(
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra/_internal/utils.py", line 394, in _run_hydra
+    _run_app(
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra/_internal/utils.py", line 465, in _run_app
+    run_and_report(
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra/_internal/utils.py", line 220, in run_and_report
+    return func()
+           ^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra/_internal/utils.py", line 466, in <lambda>
+    lambda: hydra.multirun(
+            ^^^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra/_internal/hydra.py", line 162, in multirun
+    ret = sweeper.sweep(arguments=task_overrides)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra/_internal/core_plugins/basic_sweeper.py", line 177, in sweep
+    results = self.launcher.launch(batch, initial_job_idx=initial_job_idx)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra_plugins/hydra_ray_launcher/ray_launcher.py", line 33, in launch
+    return _core.launch(
+           ^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra_plugins/hydra_ray_launcher/_core.py", line 62, in launch
+    return [ray.get(run) for run in runs]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/hydra_plugins/hydra_ray_launcher/_core.py", line 62, in <listcomp>
+    return [ray.get(run) for run in runs]
+            ^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/auto_init_hook.py", line 24, in auto_init_wrapper
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/client_mode_hook.py", line 103, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/worker.py", line 2518, in get
+    values, debugger_breakpoint = worker.get_objects(object_refs, timeout=timeout)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/worker.py", line 753, in get_objects
+    data_metadata_pairs = self.core_worker.get_objects(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "python/ray/_raylet.pyx", line 2789, in ray._raylet.CoreWorker.get_objects
+  File "python/ray/_raylet.pyx", line 400, in ray._raylet.check_status
+KeyboardInterrupt
+Exception ignored in atexit callback: <function shutdown at 0x7ea5c25daa20>
+Traceback (most recent call last):
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/client_mode_hook.py", line 103, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xfusion/anaconda3/envs/splitwise-sim/lib/python3.11/site-packages/ray/_private/worker.py", line 1685, in shutdown
+    time.sleep(0.5)
+KeyboardInterrupt: 

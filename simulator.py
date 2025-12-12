@@ -108,7 +108,7 @@ class Simulator:
             event.action()
             event.mark_completed()
             self.completed_events.append(event)
-            self.logger.debug(f"{event.time},{event.action},{event.status}")
+            # self.logger.debug(f"{event.time},{event.action},{event.status}")
 
 
 
@@ -232,10 +232,10 @@ class TraceRLSimulator(Simulator):
         self.decision_interval = 10  # 保存间隔
 
         rl_config = {
-            "w_cost": 0.6,
-            "w_slo": 2.0,
-            "w_switch": 0.15,
-            "w_util": 0.05,
+            "w_cost": 0.7,
+            "w_slo": 0.3,
+            "w_switch": 0.1,
+            "w_util": 0.2,
             "action_scale_step": 5,
             "action_mig_step": 3,
             "min_instances_per_pool": 2,
@@ -294,7 +294,7 @@ class TraceRLSimulator(Simulator):
         # --- 训练状态追踪 ---
         self.decision_step = 0  # 相当于 time_step
         self.last_observation = None  # s_t
-        self.save_model_freq = 10000  # 保存模型频率
+        self.save_model_freq = 300  # 保存模型频率
 
         logging.info("TraceSimulator initialized")
         self.load_trace()
@@ -361,7 +361,7 @@ class TraceRLSimulator(Simulator):
             self.reward_recorder.record_reward(self.decision_step, info)
 
             # 日志记录 (非常重要)
-            if self.decision_step % 100 == 0:
+            if self.decision_step % 10 == 0:
                 logging.info(f"Step: {self.decision_step} | Reward: {reward:.4f} | Cost: {info['raw_cost']:.2f}")
 
         if self.decision_step % self.update_timestep == 0 and self.decision_step > 0:
