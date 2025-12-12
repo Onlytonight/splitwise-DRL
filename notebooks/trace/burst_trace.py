@@ -59,7 +59,7 @@ class SyntheticTraceGenerator:
         print(f"Injecting {num_bursts} bursts...")
         for start_t in burst_starts:
             # 持续 15s 到 45s
-            duration = np.random.randint(15, 45)
+            duration = np.random.randint(30, 45)
             # 基础RPS平均值的2.0x 到 5.0x
             intensity = np.random.uniform(1.0, 2.0)
             
