@@ -783,10 +783,13 @@ class MixedPoolScheduler(KVScheduler):
     def schedule(self, request, *args, **kwargs):
         """
         Assigns each to the least loaded instance (by queue length)
+        Returns True if scheduled successfully, False if backpressured (no capacity).
         """
         if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0) \
             and len(self.mixed_instances) == 0:
-            raise ValueError("No instances available")
+            if self.debug:
+                print(f"[Backpressure] Req {request.request_id} stalled. No instances available.")
+            return False
 
         prompt_task = request.root_node
         token_task = next(request.successors(prompt_task))
@@ -823,12 +826,11 @@ class MixedPoolScheduler(KVScheduler):
             self.mixed_instances.append(token_instance)
             token_instance.sched_tag = "mixed"
 
-        # if we didn't find any instance still, devolve to baseline mixed batching
+        # if we didn't find any instance still, return failure (backpressure)
         if prompt_instance is None or token_instance is None:
-            all_instances = self.prompt_instances + self.mixed_instances + self.token_instances
-            prompt_instance = min(all_instances,
-                                  key=lambda instance: instance.sched_pending_tokens)
-            token_instance = prompt_instance
+            if self.debug:
+                print(f"[Backpressure] Req {request.request_id} stalled. All instances overloaded.")
+            return False
 
         if prompt_instance != token_instance:
             # ship KV-cache between instances
@@ -850,8 +852,104 @@ class MixedPoolScheduler(KVScheduler):
         # bookkeeping
         prompt_instance.sched_pending_tokens += prompt_task.prompt_size
         token_instance.sched_pending_tokens += 1
+        
+        return True
         # print("prompt instance num is", len(self.prompt_instances), ",token instance num is",
         #       len(self.token_instances), "mixed instance num is", len(self.mixed_instances))
+    
+    def run_request(self, request):
+        """
+        重写 run_request 以支持调度失败的情况（反压机制）
+        当没有可用实例时，请求会保持在 pending_queue 中
+        """
+        # 尝试调度
+        is_scheduled = self.schedule(request)
+        
+        if is_scheduled:
+            # 调度成功
+            request.run_on_executor()
+            
+            # 记录调度时间
+            start = time.time()
+            end = time.time()
+            self.scheduler_logger.debug('%s,sched_overhead,%s', clock(), end-start)
+            
+            # 标记调度成功时间
+            if hasattr(request.metrics, 'success_schedule_time'):
+                request.metrics.success_schedule_time = clock()
+            
+            self.spawn_executor(ExecutorType.CentralExecutor, request)
+            self.pending_queue.remove(request)
+            self.executing_queue.append(request)
+        else:
+            # 调度失败（反压）
+            # 记录首次调度失败时间
+            if hasattr(request.metrics, 'first_schedule_failure_timestamp'):
+                if request.metrics.first_schedule_failure_timestamp == 0:
+                    request.metrics.first_schedule_failure_timestamp = clock()
+            
+            # 请求保持在 pending_queue 中等待重试
+            if self.debug:
+                print(f"[MixedPoolScheduler] Request {request.request_id} waiting for capacity at {clock():.2f}")
+    
+    def request_completion(self, request):
+        """
+        请求完成时释放资源，并尝试调度等待队列中的请求
+        """
+        # 标准完成逻辑
+        super().request_completion(request)
+        
+        # 记录调度失败持续时间
+        if hasattr(request.metrics, 'first_schedule_failure_timestamp'):
+            if request.metrics.first_schedule_failure_timestamp > 0:
+                request.metrics.schedule_failure_duration = clock() - request.metrics.first_schedule_failure_timestamp
+        
+        # 记录调度成功持续时间
+        if hasattr(request.metrics, 'success_schedule_time'):
+            if request.metrics.success_schedule_time > 0:
+                request.metrics.schedule_success_duration = clock() - request.metrics.success_schedule_time
+        
+        # 资源已释放，尝试调度等待队列中的请求
+        self._try_schedule_pending_requests()
+    
+    def _try_schedule_pending_requests(self):
+        """
+        尝试调度所有等待的请求，直到无法调度为止
+        """
+        while len(self.pending_queue) > 0:
+            retry_request = self.pending_queue[0]
+            
+            # 尝试调度
+            is_scheduled = self.schedule(retry_request)
+            
+            if is_scheduled:
+                # 调度成功
+                retry_request.run_on_executor()
+                
+                # 标记调度成功时间
+                if hasattr(retry_request.metrics, 'success_schedule_time'):
+                    if retry_request.metrics.success_schedule_time == 0:
+                        retry_request.metrics.success_schedule_time = clock()
+                
+                self.spawn_executor(self.executor_type, retry_request)
+                self.pending_queue.pop(0)
+                self.executing_queue.append(retry_request)
+                
+                if self.debug:
+                    print(f"[MixedPoolScheduler] Request {retry_request.request_id} scheduled after waiting at {clock():.2f}")
+            else:
+                # 调度失败，停止尝试
+                break
+    
+    def on_instance_available(self):
+        """
+        当新实例可用时（扩容完成）调用此方法
+        尝试调度等待队列中的所有请求
+        """
+        if self.debug:
+            print(f"[MixedPoolScheduler] New instance available at {clock():.2f}, trying to schedule {len(self.pending_queue)} pending requests")
+        
+        self._try_schedule_pending_requests()
 
 
 

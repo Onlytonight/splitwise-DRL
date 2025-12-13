@@ -193,6 +193,7 @@ class ScalingManager:
     def _complete_scale_up(self, instance):
         """
         完成实例扩容，将实例状态设置为 ACTIVE
+        并通知调度器尝试调度等待的请求
         """
         self.instance_status[instance.instance_id] = InstanceStatus.ACTIVE
         if instance in self.scaling_up_instances:
@@ -202,6 +203,15 @@ class ScalingManager:
                         clock(), instance.instance_id, InstanceStatus.ACTIVE.value)
         
         # print(f"[ScalingManager] Instance {instance.instance_id} scaled up at {clock():.2f}")
+        
+        # 通知调度器有新实例可用，尝试调度等待的请求
+        if hasattr(self.application, 'scheduler'):
+            scheduler = self.application.scheduler
+            # 检查调度器是否有 on_instance_available 方法
+            if hasattr(scheduler, 'on_instance_available'):
+                scheduler.on_instance_available()
+                if self.debug:
+                    print(f"[ScalingManager] Notified scheduler of new instance {instance.instance_id} at {clock():.2f}")
     
     def scale_down_instance(self, instance):
         """
