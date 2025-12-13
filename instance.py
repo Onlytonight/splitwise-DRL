@@ -71,6 +71,10 @@ class Instance():
         
         ## scaling management
         self.scaling_status = None  # 由 ScalingManager 管理，值为 InstanceStatus 枚举
+        
+        ## cumulative busy time tracking (用于周期性计算利用率)
+        self.cumulative_busy_time = 0.0  # 累计忙碌时间
+        self.last_busy_start = None  # 上次开始忙碌的时间
 
         ## instance logger
         if self.debug:
@@ -129,11 +133,19 @@ class Instance():
         Task completes at this Instance.
         """
         task.complete()
-        self.metrics.busy_time += clock() - self.metrics.run_timestamp
+        busy_duration = clock() - self.metrics.run_timestamp
+        self.metrics.busy_time += busy_duration
         self.metrics.run_timestamp = 0.
         self.batch.remove(task)
         self.completed_queue.append(task)
         task.executor.finish_task(task, self)
+        
+        # 如果没有更多任务，停止追踪忙碌时间
+        if len(self.pending_queue) == 0:
+            if self.last_busy_start is not None:
+                self.cumulative_busy_time += clock() - self.last_busy_start
+                self.last_busy_start = None
+        
         if len(self.pending_queue) > 0:
             next_task = self.pending_queue[0]
             self.run_task(next_task)
@@ -175,6 +187,30 @@ class Instance():
         return (len(self.pending_queue) > 0 or 
                 len(self.batch) > 0 or
                 len(self.blocked_queue) > 0)
+    
+    def get_and_reset_busy_time(self):
+        """
+        获取累计忙碌时间并清零
+        用于周期性计算利用率
+        
+        Returns:
+            float: 自上次调用以来的累计忙碌时间
+        """
+        from simulator import clock
+        
+        # 如果当前正在忙碌，需要加上当前这段时间
+        if self.last_busy_start is not None:
+            current_busy_time = self.cumulative_busy_time + (clock() - self.last_busy_start)
+        else:
+            current_busy_time = self.cumulative_busy_time
+        
+        # 清零累计时间，准备下一个周期
+        self.cumulative_busy_time = 0.0
+        # 如果当前正在忙碌，重置起始时间为现在
+        if self.last_busy_start is not None:
+            self.last_busy_start = clock()
+        
+        return current_busy_time
 
     def run_task(self, task):
         """
@@ -183,6 +219,9 @@ class Instance():
         """
         task.run()
         self.metrics.run_timestamp = clock()
+        # 开始追踪忙碌时间
+        if self.last_busy_start is None:
+            self.last_busy_start = clock()
         self.pending_queue.remove(task)
         self.batch.append(task)
         task.duration = get_duration(task=task,
@@ -273,6 +312,7 @@ class ORCAInstance(Instance):
         # map requests->tasks on this instance
         self.request_tasks = {}
         self.last_complete_time = 0.
+        
 
         if self.debug:
             self.scheduler_logger.debug(
@@ -425,6 +465,9 @@ class ORCAInstance(Instance):
         # update metrics
         if len(self.batch) == 1:
             self.metrics.run_timestamp = clock()
+            # 开始追踪忙碌时间
+            if self.last_busy_start is None:
+                self.last_busy_start = clock()
 
     def remove_from_batch(self, task):
         """
@@ -441,8 +484,13 @@ class ORCAInstance(Instance):
 
         # update metrics
         if len(self.batch) == 0:
-            self.metrics.busy_time += clock() - self.metrics.run_timestamp
+            busy_duration = clock() - self.metrics.run_timestamp
+            self.metrics.busy_time += busy_duration
             self.metrics.run_timestamp = 0.
+            # 停止追踪忙碌时间
+            if self.last_busy_start is not None:
+                self.cumulative_busy_time += clock() - self.last_busy_start
+                self.last_busy_start = None
 
     def get_num_contiguous_iterations(self):
         """

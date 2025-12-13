@@ -237,9 +237,11 @@ class RLStateCollector:
                n_p, n_t, n_m, total_memory/instance_len
 
     def compute_util(self, instances, current_time, interval):
-        # 不确定逻辑对不对
-        # 如果上次有任务完成距离现在>10,则该interval一直空闲；如果上次有任务完成超过现在，则一直繁忙；
-        
+        """
+        计算实例的平均利用率
+        通过获取每个实例的累计忙碌时间并除以时间间隔
+        调用后会重置每个实例的累计时间计数器
+        """
         # 获取活跃实例
         if hasattr(self.applications[0], 'scaling_manager') and \
            self.applications[0].scaling_manager is not None:
@@ -250,20 +252,16 @@ class RLStateCollector:
         if not active_instances:
             return 0.0
         
-        util = 0
+        total_util = 0.0
         for instance in active_instances:
-            if not hasattr(instance, 'last_complete_time'):
-                continue
-            
-            if current_time - instance.last_complete_time > interval:
-                busy_time = 0
-            elif current_time - instance.last_complete_time < 0:
-                busy_time = 1
-            else:
-                busy_time = (current_time - instance.last_complete_time) / interval
-            util += busy_time
+            # 获取并重置累计忙碌时间
+            busy_time = instance.get_and_reset_busy_time()
+            # 计算利用率 = 忙碌时间 / 时间间隔
+            utilization = min(busy_time / interval, 1.0) if interval > 0 else 0.0
+            total_util += utilization
         
-        return util / len(active_instances)
+        # 返回平均利用率
+        return total_util / len(active_instances)
 
     def get_avg_utilization(self,current_time,interval):
         # 获取第一个应用的调度器
