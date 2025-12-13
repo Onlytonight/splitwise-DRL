@@ -255,7 +255,7 @@ class Scheduler(ABC):
                 normalized_df['normalized_ttft'] = normalized_df['ttft'] / normalized_df['baseline_ttft']
                 normalized_df['normalized_tbt'] = normalized_df['tbt'] / normalized_df['baseline_tbt']
 
-                # 计算 normalized_ttft > 6 和 normalized_tbt > 5 的比例
+                # 计算 normalized_ttft > 6 和 normalized_tbt > 5 的比例（P99的SLO）
                 # <0.01才能保证p99合约
                 ttft_over_6_ratio = (normalized_df['normalized_ttft'] > 6).mean()
                 tbt_over_5_ratio = (normalized_df['normalized_tbt'] > 5).mean()

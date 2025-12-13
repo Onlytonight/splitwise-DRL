@@ -101,19 +101,21 @@ class RLStateCollector:
         # net_util = (delta_bytes / interval) / self.cluster.TOTAL_BANDWIDTH_CAPACITY
         snapshot.extend([net_util])
 
-        # --- E. 性能反馈 (SLO) [2 dim] ---
-        # 计算区间内的违约率
+        # --- E. 性能反馈 (SLO) [6 dim] ---
+        # 计算区间内的性能指标
+        ttft, tbt, vio_slo_rate = self.scheduler.get_period_result()
+        # ttft 和 tbt 分别包含 [p50, p90, p99]
+        TTFT_SLO = [2, 3, 6]
+        TBT_SLO = [1.25, 1.5, 5]
+        
+        # 归一化的 TTFT 和 TBT 比率（用于状态表示）
         ttft_rate = []
         tbt_rate = []
-        ttft,tbt,vio_slo_rate = self.scheduler.get_period_result()
-        TTFT_SLO=[2,3,6]
-        TBT_SLO=[1.25,1.5,5]
         for i in range(len(TTFT_SLO)):
-            ttft_rate.append(ttft[i]/TTFT_SLO[i])
-            tbt_rate.append(tbt[i]/TBT_SLO[i])
+            ttft_rate.append(ttft[i] / TTFT_SLO[i])
+            tbt_rate.append(tbt[i] / TBT_SLO[i])
 
-
-        snapshot.extend(ttft_rate+tbt_rate)
+        snapshot.extend(ttft_rate + tbt_rate)
 
         # --- 更新累积状态供下次使用 ---
         self.last_stats.update({
@@ -121,7 +123,11 @@ class RLStateCollector:
             'completed_tokens': curr_tokens,
         })
 
-        return np.array(snapshot, dtype=np.float32),[n_p, n_t, n_m,util_p,util_d,net_util],vio_slo_rate,rps
+        # 返回完整的 SLO 统计数据给 Reward 计算器
+        # slo_stats 格式：[[ttft_p50, ttft_p90, ttft_p99], [tbt_p50, tbt_p90, tbt_p99], [ttft_vio, tbt_vio]]
+        slo_stats = [ttft, tbt, vio_slo_rate]
+
+        return np.array(snapshot, dtype=np.float32), [n_p, n_t, n_m, util_p, util_d, net_util], slo_stats, rps
 
     def _normalize(self, raw_vector):
         """
@@ -176,17 +182,17 @@ class RLStateCollector:
 
     def get_state_and_stats(self, current_time, interval):
         # 1. 收集原始快照
-        raw_snapshot,instance_num,vio_SLO,rps = self._collect_snapshot(current_time, interval)
+        raw_snapshot, instance_num, slo_stats, rps = self._collect_snapshot(current_time, interval)
 
-        # 从 raw_snapshot 中提取需要的统计量传给 Reward 函数
-        # stats = raw_snapshot[14:]
+        # slo_stats 格式：[[ttft_p50, ttft_p90, ttft_p99], [tbt_p50, tbt_p90, tbt_p99], [ttft_vio, tbt_vio]]
+        # 这是给 Reward 函数用的完整统计数据
 
         # 2. 归一化 & 堆叠
         normalized = self._normalize(raw_snapshot)
         self.state_buffer.append(normalized)
         stacked_state = np.concatenate(self.state_buffer)
 
-        return stacked_state, vio_SLO,instance_num,rps
+        return stacked_state, slo_stats, instance_num, rps
 
     def get_instance_feature(self):
         # 获取第一个应用的调度器

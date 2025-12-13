@@ -283,9 +283,10 @@ class TraceRLSimulator(Simulator):
 
         # --- 初始化 Agent ---
         # 状态维数: 80 (stack_size=4 * feature=20)
-        # 动作维数: 3 (alpha_p, alpha_t, alpha_mig)
+        # 动作维数: 4 (alpha_p, alpha_t, alpha_mig, do_action)
+        # do_action > 0: 执行扩缩容; do_action <= 0: 不动作
         state_dim = 80
-        action_dim = 3
+        action_dim = 4
 
         self.agent = PPO(state_dim, action_dim, self.lr_actor, self.lr_critic,
                          self.gamma, self.K_epochs, self.eps_clip,
@@ -336,18 +337,24 @@ class TraceRLSimulator(Simulator):
         # ---------------------------------------------------------
         # 1. 状态收集 (State Collection)
         # ---------------------------------------------------------
-        state, raw_stats,instance_num,rps = self.rl_collector.get_state_and_stats(
+        state, raw_stats, instance_num, rps = self.rl_collector.get_state_and_stats(
             self.time, self.decision_interval
         )
         logging.debug(f"RL Decision Triggered at time {current_time}")
         reward = 0
         info = {}
+        
+        # 记录上一步是否执行了动作（用于计算奖励）
+        action_was_executed = getattr(self, 'last_action_executed', True)
+        
         if self.last_observation is not None:
+            # raw_stats 格式：[[ttft_p50, ttft_p90, ttft_p99], [tbt_p50, tbt_p90, tbt_p99], [ttft_vio, tbt_vio]]
             reward, info = self.reward_calculator.calculate_reward(
                 self.cluster,
                 self.applications,
-                raw_stats , # 包含 SLO 违约率等
-                instance_num
+                raw_stats,  # 包含 TTFT 和 TBT 的 P50/P90/P99
+                instance_num,
+                action_executed=action_was_executed
             )
 
             # [关键] 这里通过 PPO 接口存储 Experience Replay
@@ -362,7 +369,8 @@ class TraceRLSimulator(Simulator):
 
             # 日志记录 (非常重要)
             if self.decision_step % 10 == 0:
-                logging.info(f"Step: {self.decision_step} | Reward: {reward:.4f} | Cost: {info['raw_cost']:.2f}")
+                logging.info(f"Step: {self.decision_step} | Reward: {reward:.4f} | Cost: {info['raw_cost']:.2f} | "
+                           f"TTFT_P99: {info.get('ttft_p99', 0):.2f} | TBT_P99: {info.get('tbt_p99', 0):.2f}")
 
         if self.decision_step % self.update_timestep == 0 and self.decision_step > 0:
             logging.info(f"Updating PPO Policy at step {self.decision_step}...")
@@ -384,7 +392,8 @@ class TraceRLSimulator(Simulator):
         # ---------------------------------------------------------
         # 3. 执行动作 (Action Execution)
         # ---------------------------------------------------------
-        self.action_executor.execute(action)
+        action_executed = self.action_executor.execute(action)
+        self.last_action_executed = action_executed  # 保存用于下次奖励计算
         self.last_observation = state
         self.decision_step += 1
         # self.last_action = action
