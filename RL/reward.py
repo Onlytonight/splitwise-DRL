@@ -83,13 +83,13 @@ class RLRewardCalculator:
             if ttft_values[i] <= ttft_slo_thresholds[i]:
                 ttft_score = 0.1  # 符合 SLO 给小奖励
             else:
-                ttft_score = -1 * ((ttft_values[i] / ttft_slo_thresholds[i]) - 1)  # 超出 SLO 给惩罚，按超出比例线性
+                ttft_score = -1 * (ttft_values[i] - ttft_slo_thresholds[i]) # 超出 SLO 给惩罚，按超出比例线性
             ttft_compliance_scores.append(ttft_score)
             # TBT
             if tbt_values[i] <= tbt_slo_thresholds[i]:
                 tbt_score = 0.1
             else:
-                tbt_score = -1 * ((tbt_values[i] / tbt_slo_thresholds[i]) - 1)
+                tbt_score = -1 * (tbt_values[i] - tbt_slo_thresholds[i]) 
             tbt_compliance_scores.append(tbt_score)
         # 加权平均
         weights = [0.2, 0.3, 0.5]
@@ -104,38 +104,26 @@ class RLRewardCalculator:
 
         # --- C. 切换成本项 & 稳定性奖励 (Stability) ---
         # 目标：抑制机器数量剧烈抖动，奖励稳定状态
-        delta_total = 0
         stability_bonus = 0.0
         
         if self.is_first_step:
             self.is_first_step = False
             switch_penalty = 0.0
         else:
-            delta_p = abs(n_p - self.last_instances['p'])
-            delta_t = abs(n_t - self.last_instances['t'])
-            delta_m = abs(n_m - self.last_instances['m'])
-            
-            delta_total = delta_p + delta_t + delta_m
-            
             # 如果没有执行扩缩容动作（delta_total == 0 或 action_executed == False）
-            if not action_executed or delta_total == 0:
+            if not action_executed:
                 # 给予稳定性奖励
                 stability_bonus = 0.3  # 鼓励保持稳定
                 switch_penalty = 0.0
             else:
-                current_action_sign = np.sign(delta_total)
-                hysteresis_penalty = 0
-                # 如果上一步不为0，这一步也不为0，且方向相反
-                if self.last_action_sign != 0 and current_action_sign != 0:
-                    if self.last_action_sign != current_action_sign:
-                        # 触发重罚！罚分是普通 switch 的 10 倍
-                        hysteresis_penalty = -5.0         
-                self.last_action_sign = current_action_sign
-                
-                # 归一化切换量 (假设一次最多变动 10 台) - 改为指数衰减
-                total_delta = delta_p + delta_t + delta_m
-                switch_penalty = -(np.exp(total_delta / 10.0) - 1) / (np.e - 1) + hysteresis_penalty
+                switch_penalty = -0.2
 
+    
+        delta_p = abs(n_p - self.last_instances['p'])
+        delta_t = abs(n_t - self.last_instances['t'])
+        delta_m = abs(n_m - self.last_instances['m'])
+        delta_total = delta_p + delta_t + delta_m
+        
             
         # 更新历史
         self.last_instances = {'p': n_p, 't': n_t, 'm': n_m}
