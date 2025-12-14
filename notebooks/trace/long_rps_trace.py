@@ -29,8 +29,8 @@ def generate_long_rps_trace(
     current_time_offset = 0
     
     # Define request rates for ascending and descending phases
-    ascending_rates = list(range(10, 101, 10))  # 10, 20, ..., 140, 150
-    descending_rates = list(range(100, 9, -10))  # 150, 140, ..., 20, 10
+    ascending_rates = list(range(10, 51, 10))  # 10, 20, ..., 140, 150
+    descending_rates = list(range(50, 9, -10))  # 150, 140, ..., 20, 10
     
     for cycle in range(cycles):
         print(f"Generating cycle {cycle + 1}/{cycles}")
