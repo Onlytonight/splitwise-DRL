@@ -18,7 +18,7 @@ python run.py --multirun\
     start_state.prompt.num_instances=10 \
     start_state.token.num_instances=10 \
     performance_model=db \
-    trace.filename=long_rps_conv_combined \
+    trace.filename=long_rps_code_combined \
     seed=0\
 
 #--multirun    applications.0.scheduler=adaptive_pool     cluster=half_half     cluster.servers.0.count=0     cluster.servers.1.count=40     start_state=splitwise     start_state.prompt.num_instances=25     start_state.token.num_instances=15     performance_model=db     trace.filename=rr_conv_140    seed=0
