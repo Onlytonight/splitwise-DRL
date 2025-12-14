@@ -379,7 +379,14 @@ class TraceRLSimulator(Simulator):
             self.agent.decay_action_std(self.action_std_decay_rate, self.min_action_std)
             logging.info(f"Decayed action std to {self.agent.action_std}")
         if self.decision_step % self.save_model_freq == 0 and self.decision_step > 0:
-            save_path = f"PPO_checkpoint_{self.decision_step}.pth"
+            # 创建cp目录（如果不存在）
+            cp_dir = "cp"
+            os.makedirs(cp_dir, exist_ok=True)
+            
+            # 添加时间戳的模型文件名
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = f"{cp_dir}/PPO_checkpoint_{self.decision_step}_{timestamp}.pth"
             self.agent.save(save_path)
             logging.info(f"Model saved to {save_path}")
 
