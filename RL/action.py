@@ -93,12 +93,13 @@ class RLActionExecutor:
                         if instance_cfg is None or parallelism is None:
                             logging.warning(f"[Action] No configuration found for {tag} instance")
                             break
-                        
+
+
                         server, instance = self.scaling_manager.scale_up_full(
                             instance_cfg=instance_cfg,
                             parallelism=parallelism,
                             tag=tag,
-                            server_sku=None  # 使用默认 SKU
+                            server_sku="dgx-h100"  # 使用默认 SKU
                         )
                         # logging.info(f"[Action] Added {tag} instance {instance.instance_id} on server {server.server_id}")
                     except Exception as e:

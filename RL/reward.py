@@ -54,8 +54,7 @@ class RLRewardCalculator:
         current_cost = (n_p * self.price_p + n_t * self.price_t + n_m * self.price_m)
         max_possible_cost = self.max_instances * 1.0
 
-        # 成本惩罚 (0 ~ -1 之间) - 改为指数衰减
-        cost_penalty = -(np.exp(current_cost / max_possible_cost) - 1) / (np.e - 1)
+        cost_penalty = -current_cost
 
         # --- B. SLO 奖励项 (Performance) ---
         # 使用 P50、P90、P99 的 TTFT 和 TBT 计算 SLO 合规性
@@ -83,13 +82,13 @@ class RLRewardCalculator:
             if ttft_values[i] <= ttft_slo_thresholds[i]:
                 ttft_score = 0.1  # 符合 SLO 给小奖励
             else:
-                ttft_score = -1 * (ttft_values[i] - ttft_slo_thresholds[i]) # 超出 SLO 给惩罚，按超出比例线性
+                ttft_score = -1 * (ttft_values[i] - ttft_slo_thresholds[i]) *10 # 超出 SLO 给惩罚，按超出比例线性
             ttft_compliance_scores.append(ttft_score)
             # TBT
             if tbt_values[i] <= tbt_slo_thresholds[i]:
                 tbt_score = 0.1
             else:
-                tbt_score = -1 * (tbt_values[i] - tbt_slo_thresholds[i]) 
+                tbt_score = -1 * (tbt_values[i] - tbt_slo_thresholds[i]) *10
             tbt_compliance_scores.append(tbt_score)
         # 加权平均
         weights = [0.2, 0.3, 0.5]
@@ -97,8 +96,7 @@ class RLRewardCalculator:
         tbt_weighted_score = sum(w * s for w, s in zip(weights, tbt_compliance_scores))
         
         # 综合 SLO 奖励（TTFT 和 TBT 各占一半）
-        # 使用 tanh 将分数映射到 (-1, 1) 范围，然后缩放到 (0, 1)
-        slo_reward = (np.tanh(0.5 * ttft_weighted_score + 0.5 * tbt_weighted_score) + 1) / 2
+        slo_reward = 0.5 * ttft_weighted_score + 0.5 * tbt_weighted_score
         
         
 

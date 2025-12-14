@@ -631,81 +631,105 @@ class ORCAInstance(Instance):
     def pause_iteration(self):
         """
         在迭代边界处暂停连续迭代，通过重置完成事件来实现。
-        当有任务（通常是提示任务）到达并且必须在下一次迭代中执行时使用。
-        假设批次中的所有任务都是令牌任务。
+        改进版：增强边界检查和错误处理，使时间计算更加健壮。
         """
-        # 如果已经设置了下次迭代暂停标志，或者批次中已有提示任务，则直接返回不进行操作
-        if self.pause_next_iteration or len(self.prompt_tasks_in_batch) > 0 :
+        # === 前置检查 ===
+        # 如果已经设置了暂停标志，或者批次中有提示任务，直接返回
+        if self.pause_next_iteration or len(self.prompt_tasks_in_batch) > 0:
             return
 
         # 检查是否存在有效的迭代事件
         if "iteration" not in self.completion_events or \
-                self.completion_events["iteration"] is None or \
-                self.completion_events["iteration"].status == Event.COMPLETED:
+                self.completion_events["iteration"] is None:
             return
-
-
-        # 设置暂停标志，表示下次迭代需要暂停
-        self.pause_next_iteration = True
-
-        # 计算当前连续迭代的总持续时间
-        contiguous_iteration_duration_old = self.iteration_duration * self.num_contiguous_iterations
-        # 计算当前迭代的开始时间
-        iteration_start = self.completion_events["iteration"].time - \
-                            contiguous_iteration_duration_old
-        # 计算从当前迭代开始到现在经过的时间
-        elapsed_time = clock() - iteration_start
+        
+        event = self.completion_events["iteration"]
+        if event.status != Event.PENDING:
+            return
 
         # 防止除零错误
-        if self.iteration_duration <= 0:
+        if self.iteration_duration <= 0 or self.num_contiguous_iterations <= 0:
             return
 
-        # 计算已经完成的完整迭代次数
-        num_completed_iterations = int((clock() - iteration_start) // self.iteration_duration)
-
-        # 确保至少还有一次迭代需要完成
-        new_contiguous_iterations = max(1, num_completed_iterations + 1)
-
-        # 只有当新的迭代次数确实不同于原来时才进行暂停操作
-        if new_contiguous_iterations == self.num_contiguous_iterations:
+        # === 时间计算（带边界检查）===
+        current_time = clock()
+        scheduled_end_time = event.time
+        total_planned_duration = self.iteration_duration * self.num_contiguous_iterations
+        iteration_start_time = scheduled_end_time - total_planned_duration
+        
+        # 边界检查：确保开始时间合理
+        if iteration_start_time > current_time:
+            # 异常情况：计算出的开始时间在未来
+            logging.warning(f"[pause_iteration] Invalid time: start={iteration_start_time} > current={current_time}")
+            return
+        
+        elapsed_time = current_time - iteration_start_time
+        
+        # 边界检查：确保经过时间合理
+        if elapsed_time < 0 or elapsed_time > total_planned_duration * 1.1:
+            # 允许10%的误差容忍度
+            logging.warning(f"[pause_iteration] Invalid elapsed_time={elapsed_time}, "
+                          f"total_duration={total_planned_duration}")
             return
 
+        # === 计算新的迭代次数 ===
+        # 已完成的完整迭代数
+        num_completed_iterations = int(elapsed_time // self.iteration_duration)
+        
+        # 新的目标：完成当前这个迭代后就停止（num_completed + 1）
+        new_num_iterations = num_completed_iterations + 1
+        
+        # 边界检查：确保新迭代次数合理
+        if new_num_iterations <= 0:
+            new_num_iterations = 1
+        if new_num_iterations >= self.num_contiguous_iterations:
+            # 已经接近完成，不需要暂停
+            return
 
-        # 更新连续迭代次数为已完成的迭代数加1（即将完成的这次迭代）
-        self.num_contiguous_iterations = num_completed_iterations
+        # === 更新状态 ===
+        self.pause_next_iteration = True
+        old_num_iterations = self.num_contiguous_iterations
+        self.num_contiguous_iterations = new_num_iterations
 
-
-
-        # 更新批次中每个任务的令牌生成和处理数量
+        # 更新任务状态
         for task in self.batch:
-            # 设置任务将要生成的令牌数（等于新的连续迭代次数）
-            task.generating_tokens = self.num_contiguous_iterations
-
-
-            # 对于令牌任务，设置处理的令牌数等于连续迭代次数
             if isinstance(task, TokenTask):
+                task.generating_tokens = self.num_contiguous_iterations
                 task.processing_tokens = self.num_contiguous_iterations
             else:
-                raise ValueError(f"Unexpected task type {task.task_type} in pause_iteration")
+                # Prompt任务不应该在这里
+                logging.warning(f"[pause_iteration] Unexpected task type {task.task_type}")
+                continue
 
-        # 重新安排完成事件
-        # 计算新的连续迭代总持续时间
-        contiguous_iteration_duration_new = self.iteration_duration * self.num_contiguous_iterations
-
-        # 确保新的总时间不少于已过去的时间
-        contiguous_iteration_duration_new = max(contiguous_iteration_duration_new, elapsed_time)
-
-        # 计算剩余需要的时间（新的总时间减去已经经过的时间）
-        remaining_time = contiguous_iteration_duration_new - elapsed_time
-
-        # 确保剩余时间为正值
-        remaining_time = max(0.0, remaining_time)
-
-        # 只有当剩余时间大于一个很小的阈值时才重新调度事件
-        if remaining_time > 1e-4:
-            # 重新调度迭代完成事件，在剩余时间内触发
-            self.completion_events["iteration"] = reschedule_event(
-                self.completion_events["iteration"], remaining_time)
+        # === 重新调度事件 ===
+        new_total_duration = self.iteration_duration * self.num_contiguous_iterations
+        new_end_time = iteration_start_time + new_total_duration
+        
+        # 边界检查：确保新结束时间在当前时间之后
+        if new_end_time <= current_time:
+            # 如果计算出的时间已经过去，立即完成
+            remaining_time = 0.0001  # 极小的延迟
+        else:
+            remaining_time = new_end_time - current_time
+        
+        # 边界检查：确保剩余时间合理
+        remaining_time = max(0.0001, remaining_time)  # 至少保留一点时间
+        remaining_time = min(remaining_time, self.iteration_duration * 2)  # 不超过2个迭代的时间
+        
+        # 重新调度事件
+        try:
+            self.completion_events["iteration"] = reschedule_event(event, remaining_time)
+            
+            # 调试日志
+            if self.debug:
+                logging.debug(f"[pause_iteration] instance={self.instance_id}, "
+                            f"old_iters={old_num_iterations} -> new_iters={new_num_iterations}, "
+                            f"elapsed={elapsed_time:.4f}s, remaining={remaining_time:.4f}s")
+        except Exception as e:
+            logging.error(f"[pause_iteration] Failed to reschedule: {e}")
+            # 失败时恢复状态
+            self.pause_next_iteration = False
+            self.num_contiguous_iterations = old_num_iterations
 
 
 
