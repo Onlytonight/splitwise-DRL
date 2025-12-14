@@ -102,12 +102,12 @@ if __name__ == "__main__":
     np.random.seed(0)
     
     # Create traces directory if it doesn't exist
-    traces_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'traces')
+    traces_dir = os.path.join(os.path.dirname(__file__), 'traces')
     if not os.path.exists(traces_dir):
         os.makedirs(traces_dir)
     
     # Download Azure LLM traces if needed
-    # download_azure_llm_traces()
+    download_azure_llm_traces()
     
     # Generate combined trace with changing request rates
     # 900s per cycle, 60s per segment, 10 cycles

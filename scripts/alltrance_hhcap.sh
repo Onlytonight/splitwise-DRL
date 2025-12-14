@@ -6,19 +6,19 @@ TRACE_conv=rr_conv_30
 # ,rr_conv_260,rr_conv_270,rr_conv_280,rr_conv_290,rr_conv_300,rr_conv_310,rr_conv_320,rr_conv_330,rr_conv_340,rr_conv_350
 # ,rr_conv_360,rr_conv_370,rr_conv_380,rr_conv_390,rr_conv_400,rr_conv_410,rr_conv_420,rr_conv_430,rr_conv_440,rr_conv_450,rr_conv_460,rr_conv_470,rr_conv_480,rr_conv_490,rr_conv_500
 TRACE_mix=mixed_qps_30_code30,mixed_qps_40_code30,mixed_qps_50_code30,mixed_qps_60_code30,mixed_qps_70_code30,mixed_qps_80_code30,mixed_qps_90_code30,mixed_qps_100_code30,mixed_qps_110_code30,mixed_qps_120_code30,mixed_qps_130_code30,mixed_qps_140_code30,mixed_qps_150_code30
-TRACE_long=long_rps_conv_combined
+TRACE_long=long_rps_conv_combined,rl_training_mixed_v2
 SEED=0
 # Unified_pool adaptive_pool mixed_pool all_mixed_pool
 python run.py --multirun\
     applications.0.scheduler=mixed_pool \
     cluster=half_half \
     cluster.servers.0.count=0 \
-    cluster.servers.1.count=2 \
+    cluster.servers.1.count=20 \
     start_state=splitwise \
-    start_state.prompt.num_instances=1 \
-    start_state.token.num_instances=1 \
+    start_state.prompt.num_instances=10 \
+    start_state.token.num_instances=10 \
     performance_model=db \
-    trace.filename=rl_training_mixed_v2 \
+    trace.filename=long_rps_conv_combined \
     seed=0\
 
 #--multirun    applications.0.scheduler=adaptive_pool     cluster=half_half     cluster.servers.0.count=0     cluster.servers.1.count=40     start_state=splitwise     start_state.prompt.num_instances=25     start_state.token.num_instances=15     performance_model=db     trace.filename=rr_conv_140    seed=0
