@@ -67,6 +67,14 @@ def plot_reward_curve(csv_dir, x_dir='x'):
             print(f"处理文件 {csv_file} 时出错: {e}")
 
 if __name__ == "__main__":
-    csv_dir = './results/0/splitwise_10_10/long_rps_code_combined/0_20/bloom-176b/mixed_pool/'
-    output_dir = './plots/'
-    plot_reward_curve(csv_dir, output_dir)
+    # csv_dir = './results/0/splitwise_10_10/long_rps_code_combined/0_20/bloom-176b/mixed_pool/'
+    # output_dir = './plots/'
+    # plot_reward_curve(csv_dir, output_dir)
+
+    parser = argparse.ArgumentParser(description='绘制奖励曲线图')
+    parser.add_argument('--csv_dir', type=str, required=True,
+                        help='包含CSV文件的目录路径')
+    parser.add_argument('--output_dir', type=str, default='./plots/',
+                        help='输出图像的目录路径')
+
+    args = parser.parse_args()
