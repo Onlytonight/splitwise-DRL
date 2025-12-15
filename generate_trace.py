@@ -211,7 +211,7 @@ def generate_conv_traces(
     end_time,
     request_rates,
     conv_distributions_file,
-    trace_filename_template="traces/rr_conv_{}.csv"):
+    trace_filename_template="traces/rr_conv_{}_5000.csv"):
     """
     conv traces distribution
     prompt_mean = 1155, prompt_std = 1109, prompt_min = 2, prompt_max = 14050
