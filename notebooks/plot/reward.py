@@ -67,6 +67,6 @@ def plot_reward_curve(csv_dir, x_dir='x'):
             print(f"处理文件 {csv_file} 时出错: {e}")
 
 if __name__ == "__main__":
-    csv_dir = 'results/0/splitwise_10_10/long_rps_code_combined/0_20/bloom-176b/mixed_pool/reward.csv'
-    output_dir = 'plots/'
+    csv_dir = './results/0/splitwise_10_10/long_rps_code_combined/0_20/bloom-176b/mixed_pool/'
+    output_dir = './plots/'
     plot_reward_curve(csv_dir, output_dir)
