@@ -286,7 +286,7 @@ class TraceRLSimulator(Simulator):
         # 动作维数: 4 (alpha_p, alpha_t, alpha_mig, do_action)
         # do_action > 0: 执行扩缩容; do_action <= 0: 不动作
         state_dim = 80
-        action_dim = 4
+        action_dim = 2
 
         self.agent = PPO(state_dim, action_dim, self.lr_actor, self.lr_critic,
                          self.gamma, self.K_epochs, self.eps_clip,

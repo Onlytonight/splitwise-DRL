@@ -23,27 +23,37 @@ class RLActionExecutor:
 
     def execute(self, action_vector):
         """
-        解析并执行四维解耦动作
-        action_vector: [alpha_p, alpha_t, alpha_mig, do_action] 范围通常在 [-1, 1]
-        do_action > 0: 执行扩缩容动作
-        do_action <= 0: 不执行动作（保持当前状态）
+        解析并执行二维解耦动作
+        action_vector: [alpha_p, alpha_t] 范围通常在 [-1, 1]
         """
         # 1. 解包动作 (PPO 输出通常是 numpy array)
-        alpha_p, alpha_t, alpha_mig, do_action = action_vector
+        alpha_p, alpha_t = action_vector
 
-        # 2. 检查是否执行动作
-        if do_action <= 0:
-            # 不执行扩缩容，直接返回
-            logging.debug(f"RL Action: No scaling (do_action={do_action:.3f})")
-            return False  # 返回 False 表示没有执行动作
-        
-        # 3. 映射为整数 (Rounding)
+        # 2. 映射为整数 (Rounding)
         # 使用 int() 或 round()，这里用 round 确保 0.1 也能有机会变成 1 (如果步长够大)
-        delta_p = int(round(alpha_p * self.scale_step_size))
-        delta_t = int(round(alpha_t * self.scale_step_size))
-        delta_mig = int(round(alpha_mig * self.mig_step_size))
+        # delta_p = int(round(alpha_p * self.scale_step_size))
+        # delta_t = int(round(alpha_t * self.scale_step_size))
+        threshold = 0.5  # 这个阈值就是你想要的“选择维度”
 
-        logging.debug(f"RL Raw Action: {action_vector} -> Deltas: P={delta_p}, T={delta_t}, Mig={delta_mig}, DoAction={do_action:.3f}")
+        if abs(alpha_p) < threshold:
+            delta_p = 0
+        else:
+            # 重新映射剩余区间，保持线性
+            # (val - thresh) 用于确保刚过阈值时是从 1 开始
+            sign = 1 if alpha_p > 0 else -1
+            magnitude = (abs(alpha_p) - threshold) / (1 - threshold)
+            delta_p = int(round(sign * magnitude * self.scale_step_size))
+
+        if abs(alpha_t) < threshold:
+            delta_t = 0
+        else:
+            # 重新映射剩余区间，保持线性
+            # (val - thresh) 用于确保刚过阈值时是从 1 开始
+            sign = 1 if alpha_t > 0 else -1
+            magnitude = (abs(alpha_t) - threshold) / (1 - threshold)
+            delta_t = int(round(sign * magnitude * self.scale_step_size))
+
+        logging.debug(f"RL Raw Action: {action_vector} -> Deltas: P={delta_p}, T={delta_t}")
 
         self._handle_scaling(delta_p, "prompt")
         self._handle_scaling(delta_t, "token")

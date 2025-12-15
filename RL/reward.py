@@ -80,13 +80,13 @@ class RLRewardCalculator:
         for i in range(3):
             # TTFT
             if ttft_values[i] <= ttft_slo_thresholds[i]:
-                ttft_score = 0.1  # 符合 SLO 给小奖励
+                ttft_score = 10  # 符合 SLO 给小奖励
             else:
                 ttft_score = -1 * (ttft_values[i] - ttft_slo_thresholds[i]) *10 # 超出 SLO 给惩罚，按超出比例线性
             ttft_compliance_scores.append(ttft_score)
             # TBT
             if tbt_values[i] <= tbt_slo_thresholds[i]:
-                tbt_score = 0.1
+                tbt_score = 10
             else:
                 tbt_score = -1 * (tbt_values[i] - tbt_slo_thresholds[i]) *10
             tbt_compliance_scores.append(tbt_score)
@@ -111,10 +111,10 @@ class RLRewardCalculator:
             # 如果没有执行扩缩容动作（delta_total == 0 或 action_executed == False）
             if not action_executed:
                 # 给予稳定性奖励
-                stability_bonus = 0.3  # 鼓励保持稳定
+                stability_bonus = 5  # 鼓励保持稳定
                 switch_penalty = 0.0
             else:
-                switch_penalty = -0.2
+                switch_penalty = -5
 
     
         delta_p = abs(n_p - self.last_instances['p'])
