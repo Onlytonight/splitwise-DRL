@@ -5,6 +5,10 @@ import os
 import argparse
 from scipy.ndimage import gaussian_filter1d
 
+# 支持中文字体
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
 def plot_second_column(csv_file, output_dir='./plots/'):
     """
     读取CSV文件的第二列并绘制折线图和平滑曲线图，跳过第一行
@@ -32,17 +36,17 @@ def plot_second_column(csv_file, output_dir='./plots/'):
         
         # 绘制原始折线图
         ax1.plot(second_column, linewidth=1)
-        ax1.set_xlabel('索引')
-        ax1.set_ylabel('数值')
-        ax1.set_title('第二列数据 - 原始折线图')
+        ax1.set_xlabel('Index')
+        ax1.set_ylabel('Value')
+        ax1.set_title('Column 2 Data - Original Line Plot')
         ax1.grid(True, alpha=0.3)
         
         # 绘制平滑曲线图
         smoothed_data = gaussian_filter1d(second_column, sigma=2)
         ax2.plot(smoothed_data, linewidth=2, color='red')
-        ax2.set_xlabel('索引')
-        ax2.set_ylabel('数值')
-        ax2.set_title('第二列数据 - 平滑曲线图')
+        ax2.set_xlabel('Index')
+        ax2.set_ylabel('Value')
+        ax2.set_title('Column 2 Data - Smoothed Curve')
         ax2.grid(True, alpha=0.3)
         
         # 调整布局
@@ -98,15 +102,15 @@ def plot_multiple_files(csv_files, output_dir='./plots/'):
             print(f"处理文件 {csv_file} 时出错: {e}")
     
     # 设置图表属性
-    ax1.set_xlabel('索引')
-    ax1.set_ylabel('数值')
-    ax1.set_title('第二列数据 - 原始折线图')
+    ax1.set_xlabel('Index')
+    ax1.set_ylabel('Value')
+    ax1.set_title('Column 2 Data - Original Line Plot')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     
-    ax2.set_xlabel('索引')
-    ax2.set_ylabel('数值')
-    ax2.set_title('第二列数据 - 平滑曲线图')
+    ax2.set_xlabel('Index')
+    ax2.set_ylabel('Value')
+    ax2.set_title('Column 2 Data - Smoothed Curve')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     

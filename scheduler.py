@@ -809,6 +809,11 @@ class MixedPoolScheduler(KVScheduler):
                 #print("Found token in token+mixed", clock(), request.request_id)
                 break
 
+        if prompt_instance is None or token_instance is None:
+            if self.debug:
+                print(f"[Backpressure] Req {request.request_id} stalled. All instances overloaded.")
+            return False
+
         #找不到时将专用实例转换为mixed实例
         if prompt_instance is None and len(self.token_instances) > 0:
             # take an instance from token instances and add to mixed instances
@@ -827,10 +832,7 @@ class MixedPoolScheduler(KVScheduler):
             token_instance.sched_tag = "mixed"
 
         # if we didn't find any instance still, return failure (backpressure)
-        if prompt_instance is None or token_instance is None:
-            if self.debug:
-                print(f"[Backpressure] Req {request.request_id} stalled. All instances overloaded.")
-            return False
+        # 逻辑取消
 
         if prompt_instance != token_instance:
             # ship KV-cache between instances
