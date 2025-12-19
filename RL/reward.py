@@ -26,15 +26,114 @@ class RLRewardCalculator:
         self.price_p = 1.0  # Prefill 机器 (基准价格)
         # self.price_t = price_ratio_token  # Decoding 机器 (通常较便宜)
         self.price_t = 1.0  # 假设都是用同样的机器
-        self.price_m = 1.0  # Mixed 机器 (通常假设等同于昂贵机器)
         self.max_instances = max_instances
         self.is_first_step = True
 
         # 3. 状态记忆 (用于计算切换成本)
-        self.last_instances = {'p': 0, 't': 0, 'm': 0}
+        self.last_instances = {'p': 0, 't': 0}
         self.last_action_sign = 0 # 记录上一次是加还是减
 
-    def calculate_reward(self, cluster, applications, interval_stats, instance_num, action_executed=True):
+    #     new
+        self.BASE_SLO_PENALTY = 10.0
+        self.ACTION_COST = 0.2
+        self.HYSTERESIS_PENALTY = 2.0
+        self.max_instances = max_instances
+        self.last_action_sign = 0
+
+        # SLO 阈值 (单位: 秒)
+        self.TARGET_TTFT = 1.0  # 1秒
+        self.TARGET_TBT = 0.05  # 50ms
+
+    def calculate_reward(self, cluster, applications, raw_stats, instance_num, action_executed=True, step=0):
+        """
+        基于排队论估算的即时奖励，修复马尔可夫性破坏问题。
+        """
+
+        # -------------------------------------------------------------
+        # 1. 获取即时状态 (Leading Indicators)
+        # -------------------------------------------------------------
+
+        # A. 队列堆积情况
+        # 这是“正在发生的灾难”
+        q_prompt = raw_stats[2]
+        q_decoding = raw_stats[3]
+
+        # B. 当前系统的处理能力 (Service Rate)
+        # 我们需要知道当前 1秒 能消化多少请求。
+        # 可以用过去一个小窗口的平均吞吐量来近似当前的处理能力。
+        # raw_stats 需要包含 'processed_prompt_reqs_per_sec' 和 'processed_token_reqs_per_sec'
+        # max(0.1, ...) 防止除以零
+        throughput_p = max(0.1, raw_stats[0])
+        throughput_d = max(0.1, raw_stats[1])
+
+        # -------------------------------------------------------------
+        # 2. 计算“即时估算延迟” (Instantaneous Estimated Latency)
+        # -------------------------------------------------------------
+
+        # 估算 TTFT：如果在 Prefill 队列排队，要排多久？
+        # 公式：排队数 / 消化速度
+        est_ttft = q_prompt / throughput_p
+
+        # 估算 TBT 压力：这里比较特殊。
+        # TBT 变差通常是因为 Decoding 机器显存满了，请求进不去 Decoding Pool，
+        # 或者 Decoding Pool 并发过高导致显存带宽争抢。
+        # 我们可以用 (Decoding队列 / Decoding消化速度) 来衡量“等待进入 Decoding 的延迟”。
+        # 如果 Decoding 队列在堆积，说明 TBT 风险极大 (因为前面的请求卡住了)。
+        est_decoding_wait = q_decoding / throughput_d
+
+        # 归一化为 Ratio (相对于 SLO 阈值)
+        # 注意：这里我们主要用 est_ttft 来惩罚 Prefill 不足
+        # 用 est_decoding_wait 来惩罚 Decoding 不足
+        ratio_ttft = est_ttft / self.TARGET_TTFT
+
+        # 对于 TBT，除了排队，还要看当前的显存带宽压力
+        # 如果没有排队，但 Token Generation Rate 很高，TBT 也会差。
+        # 这里用一种混合指标：
+        # 如果有排队，惩罚排队；如果没有排队，惩罚潜在的带宽拥堵（可选，简单起见先只看排队）
+        ratio_tbt = est_decoding_wait / (self.TARGET_TBT * 10)  # 容忍度稍微放宽，因为排队只是 TBT 的一部分因素
+
+        max_ratio = max(ratio_ttft, ratio_tbt)
+
+        # -------------------------------------------------------------
+        # 3. 计算奖励 (逻辑与之前相同，但输入变了)
+        # -------------------------------------------------------------
+
+        # 计算成本分数
+        n_p, n_t = raw_stats[4:6]
+        cost_score = (n_p + n_t ) / self.max_instances
+
+        reward = 0.0
+
+        if max_ratio > 1.0:
+            # === 🔴 危险区 ===
+            # 队列堆积导致预估延迟超标，立刻重罚！
+            # 这样 Agent 在队列刚开始堆积（t时刻）就会收到负反馈，不用等请求跑完。
+            reward = -self.BASE_SLO_PENALTY * ((max_ratio - 1.0) ** 2) - 2.0
+
+        elif max_ratio > 0.8:
+            # === 🟡 缓冲区 ===
+            reward = (1.0 - cost_score) + 0.5
+
+        else:
+            # === 🟢 安全区 ===
+            reward = 1.0 - cost_score
+
+        # -------------------------------------------------------------
+        # 4. 稳定性惩罚
+        # -------------------------------------------------------------
+        # (保持原有的迟滞惩罚逻辑)
+        # ...
+        info = {
+            'step':step,
+            'reward':reward,
+            'ratio_ttft': ratio_ttft,
+            'ratio_tbt': ratio_tbt,
+            'max_ratio': max_ratio,
+            'cost_score': cost_score,
+        }
+        return reward,info
+
+    def calculate_reward_(self, cluster, applications, interval_stats, instance_num, action_executed=True):
         """
         计算单步奖励
         :param cluster: Cluster 对象
@@ -48,10 +147,10 @@ class RLRewardCalculator:
 
         # --- A. 运营成本项 (OpEx) ---
         # 目标：最小化租金
-        n_p, n_t, n_m = instance_num[0], instance_num[1], instance_num[2]
+        n_p, n_t = instance_num[0], instance_num[1]
 
         # 计算加权成本 (Normalized by max budget)
-        current_cost = (n_p * self.price_p + n_t * self.price_t + n_m * self.price_m)
+        current_cost = (n_p * self.price_p + n_t * self.price_t)
         max_possible_cost = self.max_instances * 1.0
 
         cost_penalty = -current_cost
@@ -98,7 +197,6 @@ class RLRewardCalculator:
         # 综合 SLO 奖励（TTFT 和 TBT 各占一半）
         slo_reward = 0.5 * ttft_weighted_score + 0.5 * tbt_weighted_score
         
-        
 
         # --- C. 切换成本项 & 稳定性奖励 (Stability) ---
         # 目标：抑制机器数量剧烈抖动，奖励稳定状态
@@ -119,24 +217,22 @@ class RLRewardCalculator:
     
         delta_p = abs(n_p - self.last_instances['p'])
         delta_t = abs(n_t - self.last_instances['t'])
-        delta_m = abs(n_m - self.last_instances['m'])
-        delta_total = delta_p + delta_t + delta_m
-        
+        delta_total = delta_p + delta_t
             
         # 更新历史
-        self.last_instances = {'p': n_p, 't': n_t, 'm': n_m}
+        self.last_instances = {'p': n_p, 't': n_t}
 
         # --- D. 利用率塑形 (Reward Shaping - Optional) ---
         # 目标：引导 Agent 将利用率维持在 "Sweet Spot" (例如 60% - 80%)
         # 避免 0% (浪费) 也不要 100% (容易排队)
-        util_p,util_d,util_m = instance_num[3],instance_num[4],instance_num[5]
+        util_p,util_d = instance_num[2],instance_num[3]
 
         def utilization_bonus(u):
             # 一个倒 U 型函数，在 0.7 处达到峰值 1.0
             # 改为指数形式以增强敏感度
             return np.exp(1.0 - abs(u - 0.7)) / np.e
 
-        util_reward = 0.3 * utilization_bonus(util_p) + 0.3 * utilization_bonus(util_d)+ 0.3 * utilization_bonus(util_m)
+        util_reward = 0.3 * utilization_bonus(util_p) + 0.3 * utilization_bonus(util_d)
 
         # --- E. 总奖励聚合 ---
         # 注意：Cost 和 Switch 是负值，SLO、Util 和 Stability 是正值
@@ -167,28 +263,21 @@ class RLRewardCalculator:
             "tbt_p99": tbt_values[2] if len(tbt_values) > 2 else 0,
             "delta_total": delta_total,
             "action_executed": action_executed,
-            "util_avg": (util_p + util_d + util_m) / 3
+            "util_avg": (util_p + util_d) / 2
         }
 
         return total_reward, info
 
     def reset(self):
         """重置内部状态 (每个 Episode 开始时调用)"""
-        self.last_instances = {'p': 0, 't': 0, 'm': 0}
+        self.last_instances = {'p': 0, 't': 0}
 
 class RewardRecorder:
 
 
     def __init__(self, filename="reward.csv", clear_file=True):
         self.filename = filename
-        self.fieldnames = [
-            "step", "total_reward", "cost_penalty", "slo_reward", "switch_penalty", 
-            "stability_bonus", "util_reward", "raw_cost", 
-            "ttft_weighted", "tbt_weighted",
-            "ttft_p50", "ttft_p90", "ttft_p99",
-            "tbt_p50", "tbt_p90", "tbt_p99",
-            "delta_total", "action_executed", "util_avg"
-        ]
+        self.fieldnames = None  # 将在第一次调用record_reward时初始化
         self._initialize_csv(clear_file)
 
     def _initialize_csv(self, clear_file=True):
@@ -196,8 +285,7 @@ class RewardRecorder:
         # 如果需要清空文件或者文件不存在，则重新创建文件并写入表头
         if clear_file or not os.path.exists(self.filename):
             with open(self.filename, 'w', newline='') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
-                writer.writeheader()
+                pass  # 只创建空文件
 
     def record_reward(self, step, info_dict):
         """
@@ -206,29 +294,15 @@ class RewardRecorder:
         :param step: Current decision step
         :param info_dict: Dictionary containing reward components from RLRewardCalculator
         """
-        row_data = {
-            "step": step,
-            "total_reward": info_dict.get("reward_total", 0),
-            "cost_penalty": info_dict.get("pen_cost", 0),
-            "slo_reward": info_dict.get("rew_slo", 0),
-            "switch_penalty": info_dict.get("pen_switch", 0),
-            "stability_bonus": info_dict.get("rew_stability", 0),
-            "util_reward": info_dict.get("rew_util", 0),
-            "raw_cost": info_dict.get("raw_cost", 0),
-            "ttft_weighted": info_dict.get("ttft_weighted", 0),
-            "tbt_weighted": info_dict.get("tbt_weighted", 0),
-            "ttft_p50": info_dict.get("ttft_p50", 0),
-            "ttft_p90": info_dict.get("ttft_p90", 0),
-            "ttft_p99": info_dict.get("ttft_p99", 0),
-            "tbt_p50": info_dict.get("tbt_p50", 0),
-            "tbt_p90": info_dict.get("tbt_p90", 0),
-            "tbt_p99": info_dict.get("tbt_p99", 0),
-            "delta_total": info_dict.get("delta_total", 0),
-            "action_executed": info_dict.get("action_executed", True),
-            "util_avg": info_dict.get("util_avg", 0),
-        }
+
+        # 如果是第一次调用，初始化fieldnames并写入表头
+        if self.fieldnames is None:
+            self.fieldnames = list(info_dict.keys())
+            with open(self.filename, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
+                writer.writeheader()
 
         # 使用追加模式写入数据
         with open(self.filename, 'a', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
-            writer.writerow(row_data)
+            writer.writerow(info_dict)

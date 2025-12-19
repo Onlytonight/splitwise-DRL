@@ -160,9 +160,9 @@ class RLActionExecutor:
         class InstanceConfig:
             def __init__(self):
                 self.instance_type = "Splitwise"
-                self.max_batch_size = 64
-                self.max_batch_tokens = 4096
-                self.max_preemptions = 3
+                self.max_batch_size = 512
+                self.max_batch_tokens = 2048
+                self.max_preemptions = 4
         
         return InstanceConfig()
     

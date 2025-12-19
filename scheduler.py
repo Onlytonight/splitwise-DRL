@@ -886,9 +886,8 @@ class MixedPoolScheduler(KVScheduler):
         else:
             # 调度失败（反压）
             # 记录首次调度失败时间
-            if hasattr(request.metrics, 'first_schedule_failure_timestamp'):
-                if request.metrics.first_schedule_failure_timestamp == 0:
-                    request.metrics.first_schedule_failure_timestamp = clock()
+            if request.metrics.first_schedule_failure_timestamp == 0:
+                request.metrics.first_schedule_failure_timestamp = clock()
             
             # 请求保持在 pending_queue 中等待重试
             if self.debug:
@@ -941,6 +940,8 @@ class MixedPoolScheduler(KVScheduler):
                     print(f"[MixedPoolScheduler] Request {retry_request.request_id} scheduled after waiting at {clock():.2f}")
             else:
                 # 调度失败，停止尝试
+                if retry_request.metrics.first_schedule_failure_timestamp == 0:
+                    retry_request.metrics.first_schedule_failure_timestamp = clock()
                 break
     
     def on_instance_available(self):
@@ -952,6 +953,19 @@ class MixedPoolScheduler(KVScheduler):
             print(f"[MixedPoolScheduler] New instance available at {clock():.2f}, trying to schedule {len(self.pending_queue)} pending requests")
         
         self._try_schedule_pending_requests()
+
+    def get_queue_stats(self):
+        """
+        获取队列统计信息
+        """
+        total_pending_prompt_queue_length = sum(req.prompt_size for req in self.pending_queue)
+        total_pending_tokens = sum(req.token_size for req in self.pending_queue)
+        # 防止除零错误，当pending_queue为空时返回默认值0
+        if len(self.pending_queue) > 0:
+            total_time = sum(req.metrics.first_schedule_failure_timestamp-clock() for req in self.pending_queue)/len(self.pending_queue)
+        else:
+            total_time = 0
+        return total_pending_prompt_queue_length, total_pending_tokens, total_time
 
 
 

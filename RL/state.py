@@ -15,12 +15,6 @@ class RLStateCollector:
         self.applications = applications
         self.stack_size = stack_size
 
-        # 定义单个时间步的特征维度 (根据下文的 collect_snapshot 计算)
-        # Workload(4) + Queue(3) + Resource(6) + Bottleneck(1) + Performance(6) = 20
-        # Performance包含3个TTFT指标和3个TBT指标
-        self.feature_dim = 20
-        self.scheduler = self.applications[0].scheduler
-
         # 初始化堆叠缓冲区 (Deque 会自动挤出旧数据)
         self.state_buffer = deque(
             [np.zeros(self.feature_dim) for _ in range(stack_size)],
@@ -31,10 +25,8 @@ class RLStateCollector:
         self.last_stats = {
             'arrival_count': 0,
             'completed_tokens': 0,
-            'kv_transferred_bytes': 0,
-            'slo_violation_count_ttft': 0,
-            'slo_violation_count_tbt': 0,
-            'total_reqs_checked': 0
+            'completed_prompts': 0,
+            'kv_transferred_bytes': 0
         }
 
     def get_stacked_state(self, current_time, interval):
@@ -64,34 +56,41 @@ class RLStateCollector:
         curr_arrivals = self.router.total_arrivals
         delta_arrivals = curr_arrivals - self.last_stats['arrival_count']
         rps = delta_arrivals / interval
+        snapshot.extend([rps])
 
         # 2. Token Generation Rate (Splitwise 核心负载)
         # 假设 application 对象有 total_tokens_generated 属性
         curr_tokens = self.router.total_complete_token
         delta_tokens = curr_tokens - self.last_stats['completed_tokens']
         token_rate = delta_tokens / interval
+        # 3. Prompt Generation Rate (Splitwise 核心负载)
+        curr_prompts = self.router.total_complete_prompt
+        delta_prompts = curr_prompts - self.last_stats['completed_prompts']
+        prompt_rate = delta_prompts / interval
+
+        snapshot.extend([prompt_rate,token_rate])
 
         # 3 & 4. Avg Input/Output Length (从 router 的最近请求中获取)
         avg_prompt_len,avg_output_len,arrivals = self.router.get_recent_avg_len()
         assert arrivals == delta_arrivals
 
-        snapshot.extend([rps, token_rate, avg_prompt_len, avg_output_len])
+        snapshot.extend([ avg_prompt_len, avg_output_len])
 
         # --- B. 队列特征 (Queue) [3 dim] ---
         # 1. Prompt Queue Length
         # 2. Decoding Queue Length (Splitwise 瓶颈所在)
         # 3. Avg Wait Time
-        p_queue, d_queue,wait_time,n_p, n_t, n_m, util_mem = self.get_instance_feature()
+        p_queue, d_queue,wait_time,n_p, n_t, util_mem = self.get_instance_feature()
         snapshot.extend([p_queue, d_queue, wait_time])
 
-        # --- C. 资源状态 (Resources) [6 dim] ---
-        # 1-3. 实例数量 (Prompt, Token, Mixed)，已获得
-        # 4. Prefill Utilization (计算平均值)
-        # 5. Decoding Utilization
-        # 6. KV Cache Memory Utilization (防止 OOM)
-        util_p,util_d,net_util = self.get_avg_utilization(current_time,interval)
+        # --- C. 资源状态 (Resources) [5 dim] ---
+        # 1-2. 实例数量 (Prompt, Token)，已获得
+        # 3. Prefill Utilization (计算平均值)
+        # 4. Decoding Utilization
+        # 5. KV Cache Memory Utilization (防止 OOM)
+        util_p,util_d = self.get_avg_utilization(current_time,interval)
 
-        snapshot.extend([n_p, n_t, n_m, util_p, util_d, util_mem])
+        snapshot.extend([n_p, n_t, util_p,util_d, util_mem])
 
         # --- D. 瓶颈特征 (Bottleneck) [1 dim] ---
         # 1. Interconnect Bandwidth Util (KV 传输压力)
@@ -99,7 +98,7 @@ class RLStateCollector:
         # delta_bytes = curr_bytes - self.last_stats['kv_transferred_bytes']
         # # 假设总带宽已知，计算利用率
         # net_util = (delta_bytes / interval) / self.cluster.TOTAL_BANDWIDTH_CAPACITY
-        snapshot.extend([net_util])
+        # snapshot.extend([net_util])
 
         # --- E. 性能反馈 (SLO) [6 dim] ---
         # 计算区间内的性能指标
@@ -107,7 +106,7 @@ class RLStateCollector:
         # ttft 和 tbt 分别包含 [p50, p90, p99]
         TTFT_SLO = [2, 3, 6]
         TBT_SLO = [1.25, 1.5, 5]
-        
+
         # 归一化的 TTFT 和 TBT 比率（用于状态表示）
         ttft_rate = []
         tbt_rate = []
@@ -121,68 +120,82 @@ class RLStateCollector:
         self.last_stats.update({
             'arrival_count': curr_arrivals,
             'completed_tokens': curr_tokens,
+            'completed_prompts': curr_prompts,
         })
 
         # 返回完整的 SLO 统计数据给 Reward 计算器
         # slo_stats 格式：[[ttft_p50, ttft_p90, ttft_p99], [tbt_p50, tbt_p90, tbt_p99], [ttft_vio, tbt_vio]]
-        slo_stats = [ttft, tbt, vio_slo_rate]
+        # slo_stats = [ttft, tbt, vio_slo_rate]
 
-        return np.array(snapshot, dtype=np.float32), [n_p, n_t, n_m, util_p, util_d, net_util], slo_stats, rps
+        return (np.array(snapshot, dtype=np.float32), [n_p, n_t, util_p, util_d],
+                [prompt_rate,token_rate,p_queue, d_queue,n_p,n_t], rps)
 
     def _normalize(self, raw_vector):
         """
         归一化处理：Log-scaling 用于长尾分布 (队列、速率)，Min-Max 用于有界值
-        特征顺序：
-        [0-3]: Workload (RPS, TokenRate, PromptLen, OutputLen)
-        [4-6]: Queue (PQueue, DQueue, WaitTime)
-        [7-9]: Instance Counts (n_p, n_t, n_m)
-        [10-12]: Utilization (util_p, util_d, util_mem)
-        [13]: Network Util
-        [14-19]: Performance (3个TTFT + 3个TBT)
+        使用append方式动态构建归一化向量，便于增删特征
         """
-        norm_vec = np.zeros_like(raw_vector)
+        norm_vec = []
 
-        # 1. 负载类 (RPS, TokenRate) -> Log1p (平滑大数值)
+        idx = 0
+
+        # 1. 负载类 (RPS, TokenRate，promptRate) -> Log1p (平滑大数值)
         # Log(x + 1) 可以把 0~10000 压缩到 0~9
-        norm_vec[0] = np.log1p(raw_vector[0]) / 10.0  # 进一步缩放到合理范围
-        norm_vec[1] = np.log1p(raw_vector[1]) / 10.0
+        norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)  # RPS
+        idx += 1
+        norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)  # TokenRate
+        idx += 1
+        norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)  # TokenRate
+        idx += 1
+
         # Prompt/Output Length -> 除以一个最大常数
-        norm_vec[2] = np.clip(raw_vector[2] / 4096.0, 0, 1)
-        norm_vec[3] = np.clip(raw_vector[3] / 2048.0, 0, 1)
+        norm_vec.append(np.clip(raw_vector[idx] / 4096.0, 0, 1))  # PromptLen
+        idx += 1
+        norm_vec.append(np.clip(raw_vector[idx] / 2048.0, 0, 1))  # OutputLen
+        idx += 1
 
         # 2. 队列类 -> Log1p 并缩放
-        norm_vec[4] = np.log1p(raw_vector[4]) / 10.0  # P Queue
-        norm_vec[5] = np.log1p(raw_vector[5]) / 10.0  # D Queue
-        norm_vec[6] = np.tanh(raw_vector[6] / 10.0)   # Wait time (假设平均10s)
+        norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)  # P Queue
+        idx += 1
+        norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)  # D Queue
+        idx += 1
+        norm_vec.append(np.tanh(raw_vector[idx] / 10.0))   # Wait time (假设平均10s)
+        idx += 1
 
         # 3. 资源类 (Instance Counts) -> 除以最大集群规模
         MAX_INSTANCES = 100
-        norm_vec[7] = np.clip(raw_vector[7] / MAX_INSTANCES, 0, 1)
-        norm_vec[8] = np.clip(raw_vector[8] / MAX_INSTANCES, 0, 1)
-        norm_vec[9] = np.clip(raw_vector[9] / MAX_INSTANCES, 0, 1)
+        norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # n_p
+        idx += 1
+        norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # n_t
+        idx += 1
 
         # 4. 利用率 (0-1之间，直接使用)
-        norm_vec[10] = np.clip(raw_vector[10], 0, 1)  # util_p
-        norm_vec[11] = np.clip(raw_vector[11], 0, 1)  # util_d
-        norm_vec[12] = np.clip(raw_vector[12], 0, 1)  # util_mem
+        norm_vec.append(np.clip(raw_vector[idx], 0, 1))  # util_p
+        idx += 1
+        norm_vec.append(np.clip(raw_vector[idx], 0, 1))  # util_d
+        idx += 1
+        norm_vec.append(np.clip(raw_vector[idx], 0, 1))  # util_mem
+        idx += 1
 
         # 5. 网络利用率 (0-1之间)
-        norm_vec[13] = np.clip(raw_vector[13], 0, 1)  # net_util
+        # norm_vec.append(np.clip(raw_vector[idx], 0, 1))  # net_util
+        # idx += 1
 
         # 6. Performance指标 (TTFT和TBT的归一化比率)
         # 这些是 actual/SLO 的比率，需要特殊处理
         # 比率 < 1 表示满足SLO（好），> 1 表示违反SLO（坏）
         # 使用 tanh 压缩，使得 0-2 的范围映射到 0-1 之间
-        for i in range(14, 20):
-            norm_vec[i] = np.tanh(raw_vector[i])
+        for i in range(6):  # 3个TTFT + 3个TBT
+            norm_vec.append(np.tanh(raw_vector[idx]))
+            idx += 1
 
-        return norm_vec
+        return np.array(norm_vec, dtype=np.float32)
 
         # rl_utils.py
 
     def get_state_and_stats(self, current_time, interval):
         # 1. 收集原始快照
-        raw_snapshot, instance_num, slo_stats, rps = self._collect_snapshot(current_time, interval)
+        raw_snapshot, instance_num, reward_stats, rps = self._collect_snapshot(current_time, interval)
 
         # slo_stats 格式：[[ttft_p50, ttft_p90, ttft_p99], [tbt_p50, tbt_p90, tbt_p99], [ttft_vio, tbt_vio]]
         # 这是给 Reward 函数用的完整统计数据
@@ -192,55 +205,42 @@ class RLStateCollector:
         self.state_buffer.append(normalized)
         stacked_state = np.concatenate(self.state_buffer)
 
-        return stacked_state, slo_stats, instance_num, rps
+        return stacked_state, reward_stats, instance_num, rps
 
     def get_instance_feature(self):
         # 获取第一个应用的调度器
         scheduler = self.scheduler
-        
+
         # 初始化计数器
-        total_pending_prompt_queue_length = 0
-        total_pending_tokens = 0
-        total_time = 0
         total_memory = 0
-        
+
         # 获取活跃实例（排除扩缩容中的实例）
         if hasattr(self.applications[0], 'scaling_manager') and \
            self.applications[0].scaling_manager is not None:
             active_instances = self.applications[0].scaling_manager.get_active_instances(scheduler.instances)
         else:
             active_instances = scheduler.instances
-        
+
         instance_len = len(active_instances) if active_instances else 1
-        
-        # 遍历所有活跃实例
+
+        # 从sch获取
+        total_pending_prompt_queue_length,total_pending_tokens,avg_time = scheduler.get_queue_stats()
         for instance in active_instances:
-            # 累加pending_prompt_queue的长度
-            if hasattr(instance, 'pending_prompt_queue'):
-                total_pending_prompt_queue_length += len(instance.pending_prompt_queue)
-            # 累加pending_tokens
-            if hasattr(instance, 'token_queue_size'):
-                total_pending_tokens += instance.token_queue_size
-            if hasattr(instance, 'get_waiting_tasks_info'):
-                total_time += instance.get_waiting_tasks_info()
             total_memory += instance.memory
-        
+
         # 获取各类型实例数量（包括活跃的）
         if hasattr(self.applications[0], 'scaling_manager') and \
            self.applications[0].scaling_manager is not None:
             scaling_manager = self.applications[0].scaling_manager
             n_p = len(scaling_manager.get_active_instances(scheduler.prompt_instances))
             n_t = len(scaling_manager.get_active_instances(scheduler.token_instances))
-            n_m = len(scaling_manager.get_active_instances(
-                getattr(scheduler, 'mixed_instances', [])))
         else:
             n_p = len(scheduler.prompt_instances)
             n_t = len(scheduler.token_instances)
-            n_m = len(getattr(scheduler, 'mixed_instances', []))
-        # print(f"n_p: {n_p}, n_t: {n_t}, n_m: {n_m}")
-            
-        return total_pending_prompt_queue_length, total_pending_tokens, total_time/instance_len, \
-               n_p, n_t, n_m, total_memory/instance_len
+        # print(f"n_p: {n_p}, n_t: {n_t}")
+
+        return total_pending_prompt_queue_length, total_pending_tokens, avg_time, \
+               n_p, n_t, total_memory/instance_len  # Removed n_m, always return 0
 
     def compute_util(self, instances, current_time, interval):
         """
@@ -254,10 +254,10 @@ class RLStateCollector:
             active_instances = self.applications[0].scaling_manager.get_active_instances(instances)
         else:
             active_instances = instances
-        
+
         if not active_instances:
             return 0.0
-        
+
         total_util = 0.0
         for instance in active_instances:
             # 获取并重置累计忙碌时间
@@ -265,15 +265,21 @@ class RLStateCollector:
             # 计算利用率 = 忙碌时间 / 时间间隔
             utilization = min(busy_time / interval, 1.0) if interval > 0 else 0.0
             total_util += utilization
-        
+
         # 返回平均利用率
         return total_util / len(active_instances)
 
     def get_avg_utilization(self,current_time,interval):
         # 获取第一个应用的调度器
         return self.compute_util(self.scheduler.prompt_instances,current_time,interval),\
-            self.compute_util(self.scheduler.token_instances,current_time,interval),\
-            self.compute_util(self.scheduler.mixed_instances,current_time,interval)
+            self.compute_util(self.scheduler.token_instances,current_time,interval)
+            # self.compute_util(self.scheduler.mixed_instances,current_time,interval)
 
+    @property
+    def scheduler(self):
+        return self.applications[0].scheduler
 
-
+    @property
+    def feature_dim(self):
+        # Workload(5) + Queue(3) + Resource(5) + Bottleneck(0) + Performance(6) = 19
+        return 19

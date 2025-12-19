@@ -25,6 +25,7 @@ class Router(ABC):
         # total arrivals counter
         self.total_arrivals = 0
         self.total_complete_token = 0
+        self.total_complete_prompt = 0
         
         # record last recorded completed queue length
         self.last_recorded_arrival = 0
@@ -60,6 +61,7 @@ class Router(ABC):
         self.executing_queue.remove(request)
         self.completed_queue.append(request)
         self.total_complete_token+=request.token_size
+        self.total_complete_prompt+=request.prompt_size
 
     def route_request(self, request):
         self.route(request)
@@ -73,7 +75,7 @@ class Router(ABC):
         arrivals = self.total_arrivals - self.last_recorded_arrival
 
         if arrivals == 0:
-            print(arrivals,'print(arrivals)')
+            # print(arrivals,'print(arrivals)')
             # Avoid division by zero
             return 0, 0, 0
             

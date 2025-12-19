@@ -229,7 +229,7 @@ class TraceRLSimulator(Simulator):
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
-        self.decision_interval = 5  # 保存间隔
+        self.decision_interval = 2  # 保存间隔
 
         rl_config = {
             "w_cost": 0.7,
@@ -282,10 +282,9 @@ class TraceRLSimulator(Simulator):
         self.lr_critic = 0.001
 
         # --- 初始化 Agent ---
-        # 状态维数: 80 (stack_size=4 * feature=20)
-        # 动作维数: 4 (alpha_p, alpha_t, alpha_mig, do_action)
-        # do_action > 0: 执行扩缩容; do_action <= 0: 不动作
-        state_dim = 80
+        # 状态维数: 72 (stack_size=4 * feature=19)
+        # 动作维数: 2 (alpha_p, alpha_t)
+        state_dim = 76
         action_dim = 2
 
         self.agent = PPO(state_dim, action_dim, self.lr_actor, self.lr_critic,
@@ -346,7 +345,7 @@ class TraceRLSimulator(Simulator):
         
         # 记录上一步是否执行了动作（用于计算奖励）
         action_was_executed = getattr(self, 'last_action_executed', True)
-        
+
         if self.last_observation is not None:
             # raw_stats 格式：[[ttft_p50, ttft_p90, ttft_p99], [tbt_p50, tbt_p90, tbt_p99], [ttft_vio, tbt_vio]]
             reward, info = self.reward_calculator.calculate_reward(
@@ -354,7 +353,8 @@ class TraceRLSimulator(Simulator):
                 self.applications,
                 raw_stats,  # 包含 TTFT 和 TBT 的 P50/P90/P99
                 instance_num,
-                action_executed=action_was_executed
+                action_executed=action_was_executed,
+                step=self.decision_step
             )
 
             # [关键] 这里通过 PPO 接口存储 Experience Replay
@@ -369,8 +369,7 @@ class TraceRLSimulator(Simulator):
 
             # 日志记录 (非常重要)
             if self.decision_step % 10 == 0:
-                logging.info(f"Step: {self.decision_step} | Reward: {reward:.4f} | Cost: {info['raw_cost']:.2f} | "
-                           f"TTFT_P99: {info.get('ttft_p99', 0):.2f} | TBT_P99: {info.get('tbt_p99', 0):.2f}")
+                logging.info(f"Step: {self.decision_step} | Reward: {reward:.4f} | Cost: {info['cost_score']:.2f} | ")
 
         if self.decision_step % self.update_timestep == 0 and self.decision_step > 0:
             logging.info(f"Updating PPO Policy at step {self.decision_step}...")
@@ -408,7 +407,7 @@ class TraceRLSimulator(Simulator):
         # ---------------------------------------------------------
         # 4. [关键] 递归调度下一次决策
         # ---------------------------------------------------------
-        # 只要还没到结束时间，就安排下一次
+        # 只要还没到结束时间，就安排下一次。rps判断是否模拟结束
         if current_time + self.decision_interval < self.end_time and rps > 0:
             self.schedule(self.decision_interval, self.run_decision_cycle)
 
