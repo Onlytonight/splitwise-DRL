@@ -3,18 +3,23 @@ import logging
 import csv
 import os
 from collections import defaultdict
+import pandas as pd
 
 class RLRewardCalculator:
     def __init__(self,
                  config,
                  max_instances=100,
-                 price_ratio_token=0.6):
+                 price_ratio_token=0.6,
+                 mode: str = "joint"):
         """
         :param config: 包含权重参数的配置对象 (DictConfig)
         :param max_instances: 集群最大机器数 (用于归一化成本)
         :param price_ratio_token: Token 机器相对于 Prompt 机器的成本比率
                                   (例如 H100=1.0, A100=0.6)
+        :param mode: "prompt" / "token" / "joint"，用于区分奖励逻辑
         """
+        assert mode in ("prompt", "token", "joint")
+        self.mode = mode
         # 1. 权重参数 (需要通过超参数搜索微调)
         # 建议初始值: w_cost=0.5, w_slo=2.0, w_switch=0.1, w_util=0.2
         self.w_cost = config.get("w_cost", 0.5)
@@ -54,7 +59,7 @@ class RLRewardCalculator:
         # -------------------------------------------------------------
 
         # A. 队列堆积情况
-        # 这是“正在发生的灾难”
+        # 这是“正在发生的灾难”,总prompt数
         q_prompt = raw_stats[2]
         q_decoding = raw_stats[3]
 
@@ -81,18 +86,32 @@ class RLRewardCalculator:
         # 如果 Decoding 队列在堆积，说明 TBT 风险极大 (因为前面的请求卡住了)。
         est_decoding_wait = q_decoding / throughput_d
 
+        request_data = []
+        request_data.append({
+            'prompt_sizes': raw_stats[6],
+            'ttft': est_ttft,
+            'tbt': est_decoding_wait
+        })
+        request_df = pd.DataFrame(request_data)
+        normalized_df = applications[0].scheduler.perf_model.add_baseline_perf(request_df, model="bloom-176b", hardware="h100-80gb",
+                                                          tensor_parallel=8)
+
+
         # 归一化为 Ratio (相对于 SLO 阈值)
-        # 注意：这里我们主要用 est_ttft 来惩罚 Prefill 不足
-        # 用 est_decoding_wait 来惩罚 Decoding 不足
-        ratio_ttft = est_ttft / self.TARGET_TTFT
+        # 注意：prompt agent 主要看 TTFT，token agent 主要看 TBT
+        # ratio_ttft = est_ttft / self.TARGET_TTFT
+        # ratio_tbt = est_decoding_wait / (self.TARGET_TBT * 10)  # 容忍度稍微放宽
+        normalized_df['normalized_ttft'] = normalized_df['ttft'] / normalized_df['baseline_ttft']
+        normalized_df['normalized_tbt'] = normalized_df['tbt'] / normalized_df['baseline_tbt']
+        ratio_ttft = normalized_df['normalized_ttft'][0] / 6
+        ratio_tbt = normalized_df['normalized_tbt'][0] / 5
 
-        # 对于 TBT，除了排队，还要看当前的显存带宽压力
-        # 如果没有排队，但 Token Generation Rate 很高，TBT 也会差。
-        # 这里用一种混合指标：
-        # 如果有排队，惩罚排队；如果没有排队，惩罚潜在的带宽拥堵（可选，简单起见先只看排队）
-        ratio_tbt = est_decoding_wait / (self.TARGET_TBT * 10)  # 容忍度稍微放宽，因为排队只是 TBT 的一部分因素
-
-        max_ratio = max(ratio_ttft, ratio_tbt)
+        if self.mode == "prompt":
+            max_ratio = ratio_ttft
+        elif self.mode == "token":
+            max_ratio = ratio_tbt
+        else:
+            max_ratio = max(ratio_ttft, ratio_tbt)
 
         # -------------------------------------------------------------
         # 3. 计算奖励 (逻辑与之前相同，但输入变了)
@@ -100,23 +119,51 @@ class RLRewardCalculator:
 
         # 计算成本分数
         n_p, n_t = raw_stats[4:6]
-        cost_score = (n_p + n_t ) / self.max_instances
+        if self.mode == "prompt":
+            cost_score = n_p
+        elif self.mode == "token":
+            cost_score = n_t
+        else:
+            cost_score = (n_p + n_t)
+        # 最大实例数*interval step
+        # 计算 prompt 实例的总使用时间（自上次调用以来）
+        # if self.mode == "prompt":
+        #     cost_score = applications[0].scaling_manager.calculate_prompt_instance_time_since_last()
+        # elif self.mode == "token":
+        #     cost_score = applications[0].scaling_manager.calculate_token_instance_time_since_last()
 
         reward = 0.0
+        # 奖励1.0
+        # if max_ratio > 1.0:
+        #     # === 🔴 危险区 ===
+        #     # 队列堆积导致预估延迟超标，立刻重罚！
+        #     # 这样 Agent 在队列刚开始堆积（t时刻）就会收到负反馈，不用等请求跑完。
+        #     reward = -self.BASE_SLO_PENALTY * ((max_ratio - 1.0) ** 2) - 2.0
+        #
+        # elif max_ratio > 0.8:
+        #     # === 🟡 缓冲区 ===
+        #     reward = (1.0 - cost_score) + 0.5
+        #
+        # else:
+        #     # === 🟢 安全区 ===
+        #     reward = 1.0 - cost_score
 
-        if max_ratio > 1.0:
-            # === 🔴 危险区 ===
-            # 队列堆积导致预估延迟超标，立刻重罚！
-            # 这样 Agent 在队列刚开始堆积（t时刻）就会收到负反馈，不用等请求跑完。
-            reward = -self.BASE_SLO_PENALTY * ((max_ratio - 1.0) ** 2) - 2.0
+        # 奖励2.0
+        # Agent 会为了让 penalty_slo 保持为 0 而不敢越线
+        # 在 penalty_slo 为 0 的前提下，它会尽可能减小 cost_term
+        reward = - (self.w_slo * (max_ratio ** 2) + self.w_cost * cost_score )
 
-        elif max_ratio > 0.8:
-            # === 🟡 缓冲区 ===
-            reward = (1.0 - cost_score) + 0.5
-
-        else:
-            # === 🟢 安全区 ===
-            reward = 1.0 - cost_score
+        # 奖励3.0
+        # 1. 悬崖：违约 (Ratio > 1.0)
+        # if max_ratio > 1.0:
+        #     reward =  -self.w_slo * (max_ratio ** 2)  # 重罚
+        # # 2. 甜头：黄金区间 (0.8 < Ratio <= 1.0)
+        # # 这就是让 Agent 勇敢的原因！只要保持在这里，不仅不罚，还给额外的正反馈
+        # elif max_ratio > 0.8:
+        #     reward = 2 - cost_score + max_ratio * 10
+        # # 3. 浪费：离悬崖太远 (Ratio <= 0.8) 即使没违约，但因为离得太远，没有“甜头”拿，只有省钱的微薄奖励
+        # else:
+        #     reward = - cost_score * ((1-max_ratio)*100)**2
 
         # -------------------------------------------------------------
         # 4. 稳定性惩罚

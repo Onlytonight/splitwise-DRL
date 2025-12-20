@@ -6,7 +6,7 @@ from collections import defaultdict
 
 import utils
 from RL.state import RLStateCollector
-from RL.reward import RLRewardCalculator,RewardRecorder
+from RL.reward import RLRewardCalculator, RewardRecorder
 from RL.action import RLActionExecutor
 from RL.PPO import PPO
 # global simulator that drives the simulation
@@ -243,60 +243,92 @@ class TraceRLSimulator(Simulator):
         }
 
         # 用于保存上一次决策时的统计快照，用于计算区间内的速率（Rate）
-        self.rl_collector = RLStateCollector(
+        # prompt / token 两个 RL 代理分别使用各自的状态收集器
+        self.prompt_collector = RLStateCollector(
             cluster=cluster,
             router=router,
             applications=applications,
-            stack_size=4
+            stack_size=4,
+            mode="prompt",
         )
-        # 初始化奖励计算器
-        self.reward_calculator = RLRewardCalculator(
-            config=rl_config,
-            max_instances=rl_config.get("max_total_instances", 100)
-        )
-        
-        # 获取第一个应用（假设只有一个应用）
-        self.application = list(applications.values())[0]
-        
-        self.action_executor = RLActionExecutor(
-            application=self.application,
-            config=rl_config  # 从配置中读取步长等参数
+        self.token_collector = RLStateCollector(
+            cluster=cluster,
+            router=router,
+            applications=applications,
+            stack_size=4,
+            mode="token",
         )
 
-        # 用于存储上一步的 Observation，用于 PPO 存储 (s, a, r, s')
-        self.last_observation = None
-        self.last_action = None
+        # 初始化两个奖励计算器
+        self.prompt_reward_calculator = RLRewardCalculator(
+            config=rl_config,
+            max_instances=rl_config.get("max_total_instances", 100),
+            mode="prompt",
+        )
+        self.token_reward_calculator = RLRewardCalculator(
+            config=rl_config,
+            max_instances=rl_config.get("max_total_instances", 100),
+            mode="token",
+        )
+
+        # 获取第一个应用（假设只有一个应用）
+        self.application = list(applications.values())[0]
+
+        self.action_executor = RLActionExecutor(
+            application=self.application,
+            config=rl_config,  # 从配置中读取步长等参数
+        )
 
         # --- PPO Hyperparameters (从你的代码中提取并简化) ---
         self.has_continuous_action_space = True
         self.action_std = 0.6  # 初始动作方差
         self.action_std_decay_rate = 0.05
         self.min_action_std = 0.1
-        self.action_std_decay_freq = int(2.5e5)  # 步长，注意仿真步长通常比Gym少，需按需调整
+        self.action_std_decay_freq = int(2.5e5)
 
-        self.update_timestep = 2000  # 每多少个决策步更新一次网络 (类似 max_ep_len * 4)
+        self.update_timestep = 2000  # 每多少个决策步更新一次网络
         self.K_epochs = 80
         self.eps_clip = 0.2
         self.gamma = 0.99
         self.lr_actor = 0.0003
         self.lr_critic = 0.001
 
-        # --- 初始化 Agent ---
-        # 状态维数: 72 (stack_size=4 * feature=19)
-        # 动作维数: 2 (alpha_p, alpha_t)
-        state_dim = 76
-        action_dim = 2
+        # --- 初始化两个 PPO Agent ---
+        prompt_state_dim = self.prompt_collector.feature_dim * self.prompt_collector.stack_size
+        token_state_dim = self.token_collector.feature_dim * self.token_collector.stack_size
 
-        self.agent = PPO(state_dim, action_dim, self.lr_actor, self.lr_critic,
-                         self.gamma, self.K_epochs, self.eps_clip,
-                         self.has_continuous_action_space, self.action_std)
+        self.prompt_agent = PPO(
+            prompt_state_dim,
+            1,  # 单一动作：只负责 prompt 池
+            self.lr_actor,
+            self.lr_critic,
+            self.gamma,
+            self.K_epochs,
+            self.eps_clip,
+            self.has_continuous_action_space,
+            self.action_std,
+        )
+        self.token_agent = PPO(
+            token_state_dim,
+            1,  # 单一动作：只负责 token 池
+            self.lr_actor,
+            self.lr_critic,
+            self.gamma,
+            self.K_epochs,
+            self.eps_clip,
+            self.has_continuous_action_space,
+            self.action_std,
+        )
 
         # --- 训练状态追踪 ---
         self.decision_step = 0  # 相当于 time_step
-        self.last_observation = None  # s_t
+        self.last_prompt_state = None
+        self.last_token_state = None
+        self.last_prompt_action_executed = True
+        self.last_token_action_executed = True
         self.save_model_freq = 300  # 保存模型频率
 
-        logging.info("TraceSimulator initialized")
+        logging.info("TraceRLSimulator initialized with dual RL agents")
         self.load_trace()
 
     def load_trace(self):
@@ -336,76 +368,114 @@ class TraceRLSimulator(Simulator):
         # ---------------------------------------------------------
         # 1. 状态收集 (State Collection)
         # ---------------------------------------------------------
-        state, raw_stats, instance_num, rps = self.rl_collector.get_state_and_stats(
+        prompt_state, raw_stats, instance_num, rps = self.prompt_collector.get_state_and_stats(
+            self.time, self.decision_interval
+        )
+        token_state, _, _, _ = self.token_collector.get_state_and_stats(
             self.time, self.decision_interval
         )
         logging.debug(f"RL Decision Triggered at time {current_time}")
-        reward = 0
-        info = {}
-        
-        # 记录上一步是否执行了动作（用于计算奖励）
-        action_was_executed = getattr(self, 'last_action_executed', True)
 
-        if self.last_observation is not None:
-            # raw_stats 格式：[[ttft_p50, ttft_p90, ttft_p99], [tbt_p50, tbt_p90, tbt_p99], [ttft_vio, tbt_vio]]
-            reward, info = self.reward_calculator.calculate_reward(
+        # ---------------------------------------------------------
+        # 2. 基于上一时刻的状态计算两个 Agent 的奖励
+        # ---------------------------------------------------------
+        if self.last_prompt_state is not None and self.last_token_state is not None:
+            prompt_reward, prompt_info = self.prompt_reward_calculator.calculate_reward(
                 self.cluster,
                 self.applications,
-                raw_stats,  # 包含 TTFT 和 TBT 的 P50/P90/P99
+                raw_stats,
                 instance_num,
-                action_executed=action_was_executed,
-                step=self.decision_step
+                action_executed=self.last_prompt_action_executed,
+                step=self.decision_step,
+            )
+            token_reward, token_info = self.token_reward_calculator.calculate_reward(
+                self.cluster,
+                self.applications,
+                raw_stats,
+                instance_num,
+                action_executed=self.last_token_action_executed,
+                step=self.decision_step,
             )
 
-            # [关键] 这里通过 PPO 接口存储 Experience Replay
-            # self.agent.store_transition(self.last_observation, self.last_action, reward, state)
-            self.agent.buffer.rewards.append(reward)
-            self.agent.buffer.is_terminals.append(False)
+            # 写入各自的 buffer
+            self.prompt_agent.buffer.rewards.append(prompt_reward)
+            self.prompt_agent.buffer.is_terminals.append(False)
+            self.token_agent.buffer.rewards.append(token_reward)
+            self.token_agent.buffer.is_terminals.append(False)
 
-            # 记录奖励到CSV文件
-            if not hasattr(self, 'reward_recorder'):
-                self.reward_recorder = RewardRecorder("reward.csv")
-            self.reward_recorder.record_reward(self.decision_step, info)
+            # 记录奖励到 CSV（按 agent 区分）
+            if not hasattr(self, 'prompt_reward_recorder'):
+                self.prompt_reward_recorder = RewardRecorder("reward_prompt.csv")
+            if not hasattr(self, 'token_reward_recorder'):
+                self.token_reward_recorder = RewardRecorder("reward_token.csv")
 
-            # 日志记录 (非常重要)
+            self.prompt_reward_recorder.record_reward(self.decision_step, prompt_info)
+            self.token_reward_recorder.record_reward(self.decision_step, token_info)
+
             if self.decision_step % 10 == 0:
-                logging.info(f"Step: {self.decision_step} | Reward: {reward:.4f} | Cost: {info['cost_score']:.2f} | ")
+                logging.info(
+                    f"Step: {self.decision_step} | "
+                    f"PromptReward: {prompt_reward:.4f} (cost={prompt_info['cost_score']:.2f},queue_est_time={prompt_info['ratio_ttft']}) | "
+                    f"TokenReward: {token_reward:.4f} (cost={token_info['cost_score']:.2f},queue_est_time={token_info['ratio_tbt']})"
+                    f""
+                )
 
+        # ---------------------------------------------------------
+        # 3. 周期性更新两个 PPO 策略
+        # ---------------------------------------------------------
         if self.decision_step % self.update_timestep == 0 and self.decision_step > 0:
-            logging.info(f"Updating PPO Policy at step {self.decision_step}...")
-            self.agent.update()
+            logging.info(f"Updating PPO Policies at step {self.decision_step}...")
+            self.prompt_agent.update()
+            self.token_agent.update()
+
         if self.has_continuous_action_space and self.decision_step % self.action_std_decay_freq == 0:
-            self.agent.decay_action_std(self.action_std_decay_rate, self.min_action_std)
-            logging.info(f"Decayed action std to {self.agent.action_std}")
+            self.prompt_agent.decay_action_std(self.action_std_decay_rate, self.min_action_std)
+            self.token_agent.decay_action_std(self.action_std_decay_rate, self.min_action_std)
+            logging.info(
+                f"Decayed action std to "
+                f"prompt={self.prompt_agent.action_std}, token={self.token_agent.action_std}"
+            )
+
         if self.decision_step % self.save_model_freq == 0 and self.decision_step > 0:
-            # 创建cp目录（如果不存在）
             cp_dir = "cp"
             os.makedirs(cp_dir, exist_ok=True)
-            
-            # 添加时间戳的模型文件名
             import datetime
+
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = f"{cp_dir}/PPO_checkpoint_{self.decision_step}_{timestamp}.pth"
-            self.agent.save(save_path)
-            logging.info(f"Model saved to {save_path}")
+            prompt_path = f"{cp_dir}/PPO_prompt_{self.decision_step}_{timestamp}.pth"
+            token_path = f"{cp_dir}/PPO_token_{self.decision_step}_{timestamp}.pth"
+            self.prompt_agent.save(prompt_path)
+            self.token_agent.save(token_path)
+            logging.info(f"Prompt model saved to {prompt_path}")
+            logging.info(f"Token model saved to {token_path}")
 
         # ---------------------------------------------------------
-        # 2. PPO 推理 (Agent Inference)
+        # 4. PPO 推理并执行各自动作
         # ---------------------------------------------------------
-        action = self.agent.select_action(state)
-        # logging.info(f"Agent chose action: {action}")
+        prompt_action_arr = self.prompt_agent.select_action(prompt_state)
+        token_action_arr = self.token_agent.select_action(token_state)
 
-        # ---------------------------------------------------------
-        # 3. 执行动作 (Action Execution)
-        # ---------------------------------------------------------
-        action_executed = self.action_executor.execute(action)
-        self.last_action_executed = action_executed  # 保存用于下次奖励计算
-        self.last_observation = state
+        prompt_alpha = float(prompt_action_arr[0]) if hasattr(prompt_action_arr, "__len__") else float(prompt_action_arr)
+        token_alpha = float(token_action_arr[0]) if hasattr(token_action_arr, "__len__") else float(token_action_arr)
+
+        prompt_executed = self.action_executor.execute_single(prompt_alpha, "prompt")
+        token_executed = self.action_executor.execute_single(token_alpha, "token")
+
+        self.last_prompt_action_executed = prompt_executed
+        self.last_token_action_executed = token_executed
+        self.last_prompt_state = prompt_state
+        self.last_token_state = token_state
+
         self.decision_step += 1
-        # self.last_action = action
 
         # ---------------------------------------------------------
-        # 4. [关键] 递归调度下一次决策
+        # 5. 清除快照缓存，确保下一个决策周期会重新收集
+        # ---------------------------------------------------------
+        from RL.state import RLStateCollector
+        RLStateCollector.clear_snapshot_cache()
+
+        # ---------------------------------------------------------
+        # 6. [关键] 递归调度下一次决策
         # ---------------------------------------------------------
         # 只要还没到结束时间，就安排下一次。rps判断是否模拟结束
         if current_time + self.decision_interval < self.end_time and rps > 0:

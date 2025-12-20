@@ -39,7 +39,6 @@ class RLActionExecutor:
             delta_p = 0
         else:
             # 重新映射剩余区间，保持线性
-            # (val - thresh) 用于确保刚过阈值时是从 1 开始
             sign = 1 if alpha_p > 0 else -1
             magnitude = (abs(alpha_p) - threshold) / (1 - threshold)
             delta_p = int(round(sign * magnitude * self.scale_step_size))
@@ -48,7 +47,6 @@ class RLActionExecutor:
             delta_t = 0
         else:
             # 重新映射剩余区间，保持线性
-            # (val - thresh) 用于确保刚过阈值时是从 1 开始
             sign = 1 if alpha_t > 0 else -1
             magnitude = (abs(alpha_t) - threshold) / (1 - threshold)
             delta_t = int(round(sign * magnitude * self.scale_step_size))
@@ -59,6 +57,24 @@ class RLActionExecutor:
         self._handle_scaling(delta_t, "token")
         
         return True  # 返回 True 表示执行了动作
+
+    def execute_single(self, alpha, tag):
+        """
+        单独执行某一个池子的扩缩容动作（用于双 Agent 场景）
+        :param alpha: PPO 输出的连续动作（-1,1）
+        :param tag: "prompt" 或 "token"
+        """
+        threshold = 0.3
+        if abs(alpha) < threshold:
+            delta = 0
+        else:
+            sign = 1 if alpha > 0 else -1
+            magnitude = (abs(alpha) - threshold) / (1 - threshold)
+            delta = int(round(sign * magnitude * self.scale_step_size))
+
+        logging.debug(f"RL Single Action[{tag}]: alpha={alpha} -> delta={delta}")
+        self._handle_scaling(delta, tag)
+        return delta != 0
 
     def _handle_scaling(self, delta, tag):
         """
@@ -83,14 +99,13 @@ class RLActionExecutor:
         # 获取活跃实例（排除扩缩容中的实例）
         active_instances = self.scaling_manager.get_active_instances(current_instances)
         current_count = len(active_instances)
-        
-        # 获取总实例数（包括所有状态）
-        total_count = len(self.scheduler.instances)
+
 
         if delta > 0:
             # --- 扩容 (Scale Up) ---
             # [安全约束] 检查预算上限
-            remaining_quota = self.max_total_instances - total_count
+            # remaining_quota = self.max_total_instances - len(self.scheduler.instances)
+            remaining_quota = self.max_total_instances- len(current_instances)
             actual_add = min(delta, remaining_quota)
 
             if actual_add > 0:

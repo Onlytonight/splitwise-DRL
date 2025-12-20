@@ -44,7 +44,7 @@ def get_data(configs, traces, seed, quantiles=[0.5, 0.9, 0.99], model=""):
 
             perf_model = PerfModel(perf_model_path, init=True)
             normalize_model = model
-            normalize_hardware = "a100-80gb"
+            normalize_hardware = "h100-80gb"
             normalize_tp = 8
             
             perf_model.add_baseline_perf(request_df, normalize_model, normalize_hardware, normalize_tp)

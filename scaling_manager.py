@@ -65,11 +65,49 @@ class ScalingManager:
         # 跟踪等待缩容的服务器（实例ID -> 服务器列表）
         self._pending_server_scale_downs = {}
         
+        # 跟踪实例状态变化时间（用于计算使用时间）
+        # instance_id -> [(status, start_time), ...]
+        self.instance_status_history = {}  # 实例状态历史记录
+        self.instance_status_start_time = {}  # 当前状态的开始时间 instance_id -> start_time
+        self.instance_tag = {}  # 实例标签映射 instance_id -> tag ("prompt" 或 "token")
+        self._last_calculation_time = None  # 上次计算总使用时间的时间戳
+        
         # 日志
         logger_name = f"scaling/{self.application.application_id}"
         level = logging.DEBUG if self.debug else logging.INFO
         self.logger = utils.file_logger(logger_name, level=level)
         self.logger.info("time,action,target,status")
+    
+    def _record_status_change(self, instance_id, new_status):
+        """
+        记录实例状态变化的时间戳
+        
+        Args:
+            instance_id: 实例ID
+            new_status: 新状态
+        """
+        current_time = clock()
+        
+        # 如果实例已有状态历史，记录上一个状态的结束时间
+        if instance_id in self.instance_status_start_time:
+            old_status = self.instance_status.get(instance_id)
+            if old_status is not None:
+                start_time = self.instance_status_start_time[instance_id]
+                duration = current_time - start_time
+                
+                # 记录到历史
+                if instance_id not in self.instance_status_history:
+                    self.instance_status_history[instance_id] = []
+                self.instance_status_history[instance_id].append({
+                    'status': old_status,
+                    'start_time': start_time,
+                    'end_time': current_time,
+                    'duration': duration
+                })
+        
+        # 更新当前状态和开始时间
+        self.instance_status[instance_id] = new_status
+        self.instance_status_start_time[instance_id] = current_time
     
     def can_schedule_to_instance(self, instance):
         """
@@ -176,8 +214,14 @@ class ScalingManager:
             tag=tag
         )
         
+        # 记录实例的 tag
+        if tag is not None:
+            self.instance_tag[instance.instance_id] = tag
+        elif hasattr(instance, 'tag') and instance.tag:
+            self.instance_tag[instance.instance_id] = instance.tag
+        
         # 标记实例为扩容中
-        self.instance_status[instance.instance_id] = InstanceStatus.SCALING_UP
+        self._record_status_change(instance.instance_id, InstanceStatus.SCALING_UP)
         self.scaling_up_instances.append(instance)
         
         # 日志
@@ -195,7 +239,7 @@ class ScalingManager:
         完成实例扩容，将实例状态设置为 ACTIVE
         并通知调度器尝试调度等待的请求
         """
-        self.instance_status[instance.instance_id] = InstanceStatus.ACTIVE
+        self._record_status_change(instance.instance_id, InstanceStatus.ACTIVE)
         if instance in self.scaling_up_instances:
             self.scaling_up_instances.remove(instance)
         
@@ -229,7 +273,7 @@ class ScalingManager:
             return
         
         # 标记实例为排空中
-        self.instance_status[instance.instance_id] = InstanceStatus.DRAINING
+        self._record_status_change(instance.instance_id, InstanceStatus.DRAINING)
         self.draining_instances.append(instance)
         
         self.logger.info("%s,scale_down_start,instance_%s,%s", 
@@ -263,7 +307,7 @@ class ScalingManager:
         """
         instance_id = instance.instance_id
         
-        self.instance_status[instance_id] = InstanceStatus.SCALING_DOWN
+        self._record_status_change(instance_id, InstanceStatus.SCALING_DOWN)
         if instance in self.draining_instances:
             self.draining_instances.remove(instance)
         
@@ -405,4 +449,196 @@ class ScalingManager:
             "total_servers": sum(len(servers) for servers in self.cluster.servers.values()),
             "total_instances": len(self.application.instances),
         }
+    
+    def calculate_total_instance_time(self, start_time=None, end_time=None, interval=None, tag=None):
+        """
+        计算指定时间间隔内所有实例的总使用时间
+        包括活跃时间、扩容启动时间和缩容排空时间
+        
+        Args:
+            start_time: 时间间隔开始时间（如果为 None，则使用上次调用时间或 0）
+            end_time: 时间间隔结束时间（如果为 None，则使用当前时间）
+            interval: 时间间隔（秒），如果提供，则 start_time = end_time - interval
+            tag: 实例标签过滤（"prompt" 或 "token"），如果为 None 则计算所有实例
+            
+        Returns:
+            float: 总使用时间（秒），包括：
+                - ACTIVE 状态的时间
+                - SCALING_UP 状态的时间（扩容启动时间）
+                - DRAINING 状态的时间（缩容排空时间）
+        """
+        current_time = clock()
+        
+        # 处理参数：支持 interval 参数
+        if interval is not None:
+            if end_time is None:
+                end_time = current_time
+            if start_time is None:
+                start_time = end_time - interval
+        else:
+            if end_time is None:
+                end_time = current_time
+            if start_time is None:
+                # 如果没有提供 start_time，使用上次记录的最早时间或 0
+                start_time = 0.0
+                if self.instance_status_history:
+                    for records in self.instance_status_history.values():
+                        if records:
+                            earliest = min(r['start_time'] for r in records)
+                            start_time = min(start_time, earliest) if start_time > 0 else earliest
+        
+        total_time = 0.0
+        
+        # 遍历所有实例（包括历史记录中的和当前存在的）
+        all_instance_ids = set(self.instance_status_history.keys())
+        all_instance_ids.update(self.instance_status.keys())
+        
+        for instance_id in all_instance_ids:
+            # 如果指定了 tag，则过滤实例
+            if tag is not None:
+                instance_tag = self.instance_tag.get(instance_id)
+                # 如果实例没有 tag 记录，尝试从 application.instances 中查找
+                if instance_tag is None:
+                    for inst in self.application.instances:
+                        if inst.instance_id == instance_id:
+                            instance_tag = getattr(inst, 'tag', None)
+                            if instance_tag:
+                                self.instance_tag[instance_id] = instance_tag
+                            break
+                
+                if instance_tag != tag:
+                    continue
+            
+            instance_total_time = 0.0
+            
+            # 1. 计算历史记录中在时间间隔内的部分
+            if instance_id in self.instance_status_history:
+                for record in self.instance_status_history[instance_id]:
+                    # 计算记录与时间间隔的重叠部分
+                    record_start = max(record['start_time'], start_time)
+                    record_end = min(record['end_time'], end_time)
+                    
+                    if record_start < record_end:
+                        # 只计算 ACTIVE、SCALING_UP、DRAINING 状态的时间
+                        if record['status'] in [InstanceStatus.ACTIVE, 
+                                                InstanceStatus.SCALING_UP, 
+                                                InstanceStatus.DRAINING]:
+                            instance_total_time += (record_end - record_start)
+            
+            # 2. 计算当前状态在时间间隔内的部分
+            if instance_id in self.instance_status_start_time:
+                status = self.instance_status.get(instance_id)
+                if status is not None:
+                    status_start = self.instance_status_start_time[instance_id]
+                    
+                    # 计算当前状态与时间间隔的重叠部分
+                    overlap_start = max(status_start, start_time)
+                    overlap_end = min(current_time, end_time)
+                    
+                    if overlap_start < overlap_end:
+                        # 只计算 ACTIVE、SCALING_UP、DRAINING 状态的时间
+                        if status in [InstanceStatus.ACTIVE, 
+                                     InstanceStatus.SCALING_UP, 
+                                     InstanceStatus.DRAINING]:
+                            instance_total_time += (overlap_end - overlap_start)
+            
+            total_time += instance_total_time
+        
+        # 更新上次计算时间（仅当没有指定 tag 时，避免影响其他计算）
+        if tag is None:
+            self._last_calculation_time = end_time
+        
+        return total_time
+    
+    def calculate_total_instance_time_since_last(self):
+        """
+        计算自上次调用以来的所有实例总使用时间
+        这是一个便捷方法，用于定期调用
+        
+        Returns:
+            float: 自上次调用以来的总使用时间（秒）
+        """
+        current_time = clock()
+        
+        if self._last_calculation_time is None:
+            # 第一次调用，计算从 0 到当前时间
+            return self.calculate_total_instance_time(start_time=0.0, end_time=current_time)
+        else:
+            # 计算从上一次调用到当前时间
+            return self.calculate_total_instance_time(
+                start_time=self._last_calculation_time, 
+                end_time=current_time
+            )
+    
+    def calculate_prompt_instance_time(self, start_time=None, end_time=None, interval=None):
+        """
+        计算指定时间间隔内所有 prompt 实例的总使用时间
+        
+        Args:
+            start_time: 时间间隔开始时间（如果为 None，则使用上次调用时间或 0）
+            end_time: 时间间隔结束时间（如果为 None，则使用当前时间）
+            interval: 时间间隔（秒），如果提供，则 start_time = end_time - interval
+            
+        Returns:
+            float: prompt 实例的总使用时间（秒）
+        """
+        return self.calculate_total_instance_time(
+            start_time=start_time, 
+            end_time=end_time, 
+            interval=interval, 
+            tag="prompt"
+        )
+    
+    def calculate_token_instance_time(self, start_time=None, end_time=None, interval=None):
+        """
+        计算指定时间间隔内所有 token 实例的总使用时间
+        
+        Args:
+            start_time: 时间间隔开始时间（如果为 None，则使用上次调用时间或 0）
+            end_time: 时间间隔结束时间（如果为 None，则使用当前时间）
+            interval: 时间间隔（秒），如果提供，则 start_time = end_time - interval
+            
+        Returns:
+            float: token 实例的总使用时间（秒）
+        """
+        return self.calculate_total_instance_time(
+            start_time=start_time, 
+            end_time=end_time, 
+            interval=interval, 
+            tag="token"
+        )
+    
+    def calculate_prompt_instance_time_since_last(self):
+        """
+        计算自上次调用以来的所有 prompt 实例总使用时间
+        
+        Returns:
+            float: 自上次调用以来的 prompt 实例总使用时间（秒）
+        """
+        current_time = clock()
+        
+        if self._last_calculation_time is None:
+            return self.calculate_prompt_instance_time(start_time=0.0, end_time=current_time)
+        else:
+            return self.calculate_prompt_instance_time(
+                start_time=self._last_calculation_time, 
+                end_time=current_time
+            )
+    
+    def calculate_token_instance_time_since_last(self):
+        """
+        计算自上次调用以来的所有 token 实例总使用时间
+        
+        Returns:
+            float: 自上次调用以来的 token 实例总使用时间（秒）
+        """
+        current_time = clock()
+        
+        if self._last_calculation_time is None:
+            return self.calculate_token_instance_time(start_time=0.0, end_time=current_time)
+        else:
+            return self.calculate_token_instance_time(
+                start_time=self._last_calculation_time, 
+                end_time=current_time
+            )
 

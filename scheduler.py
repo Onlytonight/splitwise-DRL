@@ -249,7 +249,7 @@ class Scheduler(ABC):
             if request_data:
                 # 创建DataFrame并使用PerfModel进行归一化
                 request_df = pd.DataFrame(request_data)
-                normalized_df = self.perf_model.add_baseline_perf(request_df)
+                normalized_df = self.perf_model.add_baseline_perf(request_df,model="bloom-176b",hardware="h100-80gb",tensor_parallel=8)
 
                 # 计算归一化后的TTFT和TBT
                 normalized_df['normalized_ttft'] = normalized_df['ttft'] / normalized_df['baseline_ttft']
@@ -965,7 +965,8 @@ class MixedPoolScheduler(KVScheduler):
             total_time = sum(req.metrics.first_schedule_failure_timestamp-clock() for req in self.pending_queue)/len(self.pending_queue)
         else:
             total_time = 0
-        return total_pending_prompt_queue_length, total_pending_tokens, total_time
+        avg_prompt_size = total_pending_prompt_queue_length/len(self.pending_queue) if len(self.pending_queue) > 0 else 0
+        return total_pending_prompt_queue_length, total_pending_tokens, total_time,avg_prompt_size
 
 
 
