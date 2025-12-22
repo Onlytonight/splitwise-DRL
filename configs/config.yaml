@@ -10,12 +10,19 @@ defaults:
   - applications: solo
   - trace: test_trace
   - start_state: orca
+  - autoscaling_policy: heteroscale  # 自动扩缩容策略
   - override hydra/launcher: ray
   - _self_
 
+rl_enable: False
 end_time: 86400
 debug: False
 seed: 0
+
+# 自动扩缩容配置
+autoscaling:
+  enable: True                # 是否启用自动扩缩容
+  decision_interval: 10.0      # 决策间隔（秒）
 
 choices: ${hydra:runtime.choices}
 output_dir: results/${seed}/${start_state.state_type}/${trace.filename}/${cluster.servers.0.count}_${cluster.servers.1.count}/${applications.0.model_architecture}/${applications.0.scheduler}

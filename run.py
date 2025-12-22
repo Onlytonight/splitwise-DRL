@@ -33,17 +33,31 @@ def run_simulation(cfg):
     for application in applications.values():
         router.add_application(application)
         arbiter.add_application(application)
-    sim = TraceRLSimulator(trace=trace,
-                         cluster=cluster,
-                         applications=applications,
-                         router=router,
-                         arbiter=arbiter,
-                         end_time=cfg.end_time)
+        
+    if cfg.rl_enable:
+        sim = TraceRLSimulator(trace=trace,
+                            cluster=cluster,
+                            applications=applications,
+                            router=router,
+                            arbiter=arbiter,
+                            end_time=cfg.end_time)
+    else:
+        sim = TraceSimulator(trace=trace,
+                            cluster=cluster,
+                            applications=applications,
+                            router=router,
+                            arbiter=arbiter,
+                            end_time=cfg.end_time)
     init_start_state(cfg,
                      cluster=cluster,
                      applications=applications,
                      router=router,
                      arbiter=arbiter)
+    
+    # 在模拟器初始化完成后，启动自动扩缩容
+    from initialize import start_autoscaling
+    start_autoscaling(applications)
+    
     sim.run()
 
 

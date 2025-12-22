@@ -5,6 +5,7 @@ Scaling Manager for managing instance and server scaling operations.
 import logging
 from enum import Enum
 from itertools import count
+from typing import Optional, Dict
 
 import utils
 from simulator import clock, schedule_event
@@ -41,6 +42,9 @@ class ScalingManager:
                  cluster,
                  scale_up_delay=10.0,  # 扩容启动延迟（秒）
                  drain_check_interval=1.0,  # 排空检查间隔（秒）
+                 autoscaling_policy=None,  # 自动扩缩容策略（可选）
+                 decision_interval=30.0,  # 自动扩缩容决策间隔（秒）
+                 enable_autoscaling=False,  # 是否启用自动扩缩容
                  debug=False):
         self.application = application
         self.cluster = cluster
@@ -65,11 +69,26 @@ class ScalingManager:
         # 跟踪等待缩容的服务器（实例ID -> 服务器列表）
         self._pending_server_scale_downs = {}
         
+        # 自动扩缩容相关
+        self.autoscaling_policy = autoscaling_policy
+        self.decision_interval = decision_interval
+        self.enable_autoscaling = enable_autoscaling
+        self._last_decision_time = -float('inf')
+        
+        # 用于计算 TPS 等速率指标的累积计数器
+        self._last_metrics = {
+            'completed_tokens': 0,
+            'timestamp': 0.0,
+        }
+        
         # 日志
         logger_name = f"scaling/{self.application.application_id}"
         level = logging.DEBUG if self.debug else logging.INFO
         self.logger = utils.file_logger(logger_name, level=level)
         self.logger.info("time,action,target,status")
+        
+        # 注意：不在 __init__ 中调度事件，因为此时模拟器还没有初始化
+        # 需要在模拟器启动后调用 start_autoscaling() 方法
     
     def can_schedule_to_instance(self, instance):
         """
@@ -405,4 +424,399 @@ class ScalingManager:
             "total_servers": sum(len(servers) for servers in self.cluster.servers.values()),
             "total_instances": len(self.application.instances),
         }
+    
+    # ==================== 自动扩缩容相关方法 ====================
+    
+    def collect_metrics(self) -> Dict:
+        """
+        收集系统指标用于自动扩缩容决策
+        参考 RL/state.py 的实现方式
+        
+        Returns:
+            dict: 包含各种系统指标的字典
+        """
+        current_time = clock()
+        
+        # 计算时间间隔
+        if self._last_metrics['timestamp'] > 0:
+            interval = current_time - self._last_metrics['timestamp']
+        else:
+            interval = self.decision_interval
+        
+        # 防止除零
+        if interval <= 0:
+            interval = self.decision_interval
+        
+        metrics = {
+            'timestamp': current_time,
+        }
+        
+        # 统计当前 Prefill 和 Decode 实例数
+        prompt_instances = []
+        token_instances = []
+        mixed_instances = []
+        
+        scheduler = self.application.scheduler
+        if hasattr(scheduler, 'prompt_instances'):
+            prompt_instances = [inst for inst in scheduler.prompt_instances 
+                              if self.can_schedule_to_instance(inst)]
+        if hasattr(scheduler, 'token_instances'):
+            token_instances = [inst for inst in scheduler.token_instances 
+                             if self.can_schedule_to_instance(inst)]
+        if hasattr(scheduler, 'mixed_instances'):
+            mixed_instances = [inst for inst in scheduler.mixed_instances 
+                             if self.can_schedule_to_instance(inst)]
+        
+        metrics['current_prompt_instances'] = len(prompt_instances)
+        metrics['current_token_instances'] = len(token_instances)
+        metrics['current_mixed_instances'] = len(mixed_instances)
+        
+        # 收集 Decode TPS（每秒解码 Token 数）
+        # 参考 RL/state.py: 从 router.total_complete_token 获取累积值，计算增量
+        if hasattr(self.application, 'router') and hasattr(self.application.router, 'total_complete_token'):
+            curr_tokens = self.application.router.total_complete_token
+            delta_tokens = curr_tokens - self._last_metrics['completed_tokens']
+            decode_tps_total = delta_tokens / interval
+            
+            # 更新累积状态
+            self._last_metrics['completed_tokens'] = curr_tokens
+        else:
+            # 降级方案：如果 router 不可用，设为 0
+            decode_tps_total = 0.0
+        
+        metrics['decode_tps'] = decode_tps_total
+        
+        # 收集 GPU 利用率（基于显存使用率）
+        prefill_gpu_util = 0.0
+        decode_gpu_util = 0.0
+        
+        # Prefill GPU 利用率（显存使用率）
+        if len(prompt_instances) > 0:
+            for instance in prompt_instances:
+                # 使用实例的显存利用率：memory / max_memory
+                if instance.max_memory > 0:
+                    prefill_gpu_util += instance.memory / instance.max_memory
+            prefill_gpu_util /= len(prompt_instances)
+        
+        # Decode GPU 利用率（显存使用率）
+        if len(token_instances) > 0:
+            for instance in token_instances:
+                # 使用实例的显存利用率：memory / max_memory
+                if instance.max_memory > 0:
+                    decode_gpu_util += instance.memory / instance.max_memory
+            decode_gpu_util /= len(token_instances)
+        
+        metrics['prefill_gpu_util'] = prefill_gpu_util
+        metrics['decode_gpu_util'] = decode_gpu_util
+        
+        # 收集延迟指标（TTFT 和 TBT）
+        # 参考 RL/state.py: 从 scheduler.get_period_result() 获取
+        if hasattr(scheduler, 'get_period_result'):
+            try:
+                ttft, tbt, vio_slo_rate = scheduler.get_period_result()
+                # ttft 和 tbt 是列表 [p50, p90, p99]，使用 p50 作为代表值
+                metrics['ttft'] = ttft[0] if len(ttft) > 0 else 0.0
+                metrics['tbt'] = tbt[0] if len(tbt) > 0 else 0.0
+                # 也保存完整的分位数信息，供高级策略使用
+                metrics['ttft_percentiles'] = ttft  # [p50, p90, p99]
+                metrics['tbt_percentiles'] = tbt    # [p50, p90, p99]
+                metrics['slo_violation_rate'] = vio_slo_rate  # [ttft_vio, tbt_vio]
+            except Exception as e:
+                if self.debug:
+                    self.logger.warning(f"Failed to get period result: {e}")
+                metrics['ttft'] = 0.0
+                metrics['tbt'] = 0.0
+                metrics['ttft_percentiles'] = [0.0, 0.0, 0.0]
+                metrics['tbt_percentiles'] = [0.0, 0.0, 0.0]
+                metrics['slo_violation_rate'] = [0.0, 0.0]
+        else:
+            # 降级方案：如果 scheduler 没有 get_period_result 方法
+            metrics['ttft'] = 0.0
+            metrics['tbt'] = 0.0
+            metrics['ttft_percentiles'] = [0.0, 0.0, 0.0]
+            metrics['tbt_percentiles'] = [0.0, 0.0, 0.0]
+            metrics['slo_violation_rate'] = [0.0, 0.0]
+        
+        # 队列长度
+        total_pending = sum(len(inst.pending_queue) for inst in self.application.instances)
+        metrics['pending_queue_length'] = total_pending
+        
+        # 更新时间戳
+        self._last_metrics['timestamp'] = current_time
+        
+        return metrics
+    
+    def _make_autoscaling_decision(self):
+        """
+        执行自动扩缩容决策
+        
+        这个方法会被周期性调用，使用配置的策略做出扩缩容决策
+        """
+        if not self.enable_autoscaling or self.autoscaling_policy is None:
+            return
+        
+        # 收集指标
+        metrics = self.collect_metrics()
+        
+        # 调用策略做决策
+        action = self.autoscaling_policy.decide(metrics)
+        
+        if self.debug:
+            print(f"[ScalingManager] Autoscaling decision at {clock():.2f}: {action}")
+        
+        # 执行扩缩容动作
+        self._execute_scaling_action(action, metrics)
+        
+        # 安排下一次决策
+        schedule_event(self.decision_interval, lambda: self._make_autoscaling_decision())
+    
+    def _execute_scaling_action(self, action, metrics: Dict):
+        """
+        执行扩缩容动作
+        
+        Args:
+            action: ScalingAction 对象
+            metrics: 当前系统指标
+        """
+        from autoscaling_policies import ScalingDecision
+        
+        if action.decision == ScalingDecision.NO_CHANGE:
+            return
+        
+        current_prompt = metrics['current_prompt_instances']
+        current_token = metrics['current_token_instances']
+        target_prompt = action.target_prompt_instances
+        target_token = action.target_token_instances
+        
+        self.logger.info("%s,autoscaling_decision,%s,prompt:%d->%d_token:%d->%d,%s",
+                        clock(), action.decision.value,
+                        current_prompt, target_prompt,
+                        current_token, target_token,
+                        action.reason)
+        
+        if self.debug:
+            print(f"[ScalingManager] Executing action: {action}")
+        
+        # 执行 Prefill 实例扩缩容
+        if target_prompt > current_prompt:
+            # 扩容 Prefill 实例
+            num_to_add = target_prompt - current_prompt
+            for _ in range(num_to_add):
+                self._autoscale_add_prompt_instance()
+        elif target_prompt < current_prompt:
+            # 缩容 Prefill 实例
+            num_to_remove = current_prompt - target_prompt
+            self._autoscale_remove_instances('prompt', num_to_remove)
+        
+        # 执行 Decode 实例扩缩容
+        if target_token > current_token:
+            # 扩容 Decode 实例
+            num_to_add = target_token - current_token
+            for _ in range(num_to_add):
+                self._autoscale_add_token_instance()
+        elif target_token < current_token:
+            # 缩容 Decode 实例
+            num_to_remove = current_token - target_token
+            self._autoscale_remove_instances('token', num_to_remove)
+    
+    def _autoscale_add_prompt_instance(self):
+        """自动扩容添加一个 Prefill 实例"""
+        # 获取配置（参考 action.py 的实现）
+        instance_cfg = self._get_instance_config("prompt")
+        parallelism = self._get_parallelism("prompt")
+        
+        if instance_cfg is None or parallelism is None:
+            self.logger.warning("No configuration found for prompt instance")
+            return
+        
+        try:
+            server, instance = self.scale_up_full(
+                instance_cfg=instance_cfg,
+                parallelism=parallelism,
+                tag="prompt"
+            )
+            
+            # 添加到调度器的 prompt_instances
+            if hasattr(self.application.scheduler, 'prompt_instances'):
+                # 等待实例启动完成后再添加到调度器
+                # （_complete_scale_up 中已经有通知调度器的逻辑）
+                pass
+            
+            if self.debug:
+                print(f"[ScalingManager] Auto-added prompt instance {instance.instance_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to add prompt instance: {e}")
+            print(f"[ScalingManager] Error adding prompt instance: {e}")
+    
+    def _autoscale_add_token_instance(self):
+        """自动扩容添加一个 Decode 实例"""
+        # 获取配置（参考 action.py 的实现）
+        instance_cfg = self._get_instance_config("token")
+        parallelism = self._get_parallelism("token")
+        
+        if instance_cfg is None or parallelism is None:
+            self.logger.warning("No configuration found for token instance")
+            return
+        
+        try:
+            server, instance = self.scale_up_full(
+                instance_cfg=instance_cfg,
+                parallelism=parallelism,
+                tag="token"
+            )
+            
+            if self.debug:
+                print(f"[ScalingManager] Auto-added token instance {instance.instance_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to add token instance: {e}")
+            print(f"[ScalingManager] Error adding token instance: {e}")
+    
+    def _autoscale_remove_instances(self, instance_type: str, num_to_remove: int):
+        """
+        自动缩容移除指定数量的实例
+        
+        Args:
+            instance_type: "prompt" 或 "token"
+            num_to_remove: 要移除的实例数量
+        """
+        scheduler = self.application.scheduler
+        
+        if instance_type == "prompt":
+            if not hasattr(scheduler, 'prompt_instances'):
+                return
+            candidates = [inst for inst in scheduler.prompt_instances
+                         if self.can_schedule_to_instance(inst)]
+        else:  # token
+            if not hasattr(scheduler, 'token_instances'):
+                return
+            candidates = [inst for inst in scheduler.token_instances
+                         if self.can_schedule_to_instance(inst)]
+        
+        # 选择要移除的实例：优先移除负载最低的实例
+        # 负载定义为：待处理队列长度 + 当前批次大小
+        def get_instance_load(inst):
+            """计算实例负载"""
+            queue_load = len(inst.pending_queue)
+            batch_load = len(inst.batch) if hasattr(inst, 'batch') else 0
+            # 如果有 blocked_queue，也计入负载
+            blocked_load = len(inst.blocked_queue) if hasattr(inst, 'blocked_queue') else 0
+            return queue_load + batch_load + blocked_load
+        
+        # 按负载从低到高排序，优先移除负载低的实例
+        candidates.sort(key=get_instance_load)
+        
+        num_removed = 0
+        for instance in candidates:
+            if num_removed >= num_to_remove:
+                break
+            
+            # 检查实例是否可以缩容（没有正在扩容或缩容中）
+            status = self.instance_status.get(instance.instance_id, InstanceStatus.ACTIVE)
+            if status == InstanceStatus.ACTIVE:
+                load = get_instance_load(instance)
+                self.scale_down_full(instance)
+                num_removed += 1
+                
+                if self.debug:
+                    print(f"[ScalingManager] Auto-removed {instance_type} instance {instance.instance_id} "
+                          f"(load={load}: pending={len(instance.pending_queue)}, "
+                          f"batch={len(instance.batch) if hasattr(instance, 'batch') else 0})")
+        
+        if num_removed < num_to_remove:
+            self.logger.warning(
+                f"Could only remove {num_removed}/{num_to_remove} {instance_type} instances"
+            )
+    
+    def set_autoscaling_policy(self, policy):
+        """
+        设置自动扩缩容策略
+        
+        Args:
+            policy: AutoscalingPolicy 的实例
+        """
+        self.autoscaling_policy = policy
+        if self.debug:
+            print(f"[ScalingManager] Set autoscaling policy to {policy.name}")
+    
+    def start_autoscaling(self):
+        """
+        启动自动扩缩容循环
+        
+        应该在模拟器初始化完成后调用（例如在 init_start_state 之后）
+        """
+        if self.enable_autoscaling and self.autoscaling_policy is not None:
+            # 安排第一次决策
+            schedule_event(self.decision_interval, lambda: self._make_autoscaling_decision())
+            if self.debug:
+                print(f"[ScalingManager] Started autoscaling loop with interval {self.decision_interval}s")
+        else:
+            if self.debug:
+                print("[ScalingManager] Autoscaling not started (disabled or no policy)")
+    
+    def enable_autoscaling_loop(self):
+        """启用自动扩缩容循环（如果已经在运行中则不重复启动）"""
+        if not self.enable_autoscaling:
+            self.enable_autoscaling = True
+            # 如果模拟器已经启动，立即调度
+            try:
+                schedule_event(self.decision_interval, lambda: self._make_autoscaling_decision())
+                if self.debug:
+                    print(f"[ScalingManager] Enabled autoscaling loop with interval {self.decision_interval}s")
+            except:
+                # 如果 schedule_event 失败（模拟器未初始化），等待 start_autoscaling() 调用
+                if self.debug:
+                    print("[ScalingManager] Autoscaling enabled, waiting for simulator initialization")
+    
+    def disable_autoscaling_loop(self):
+        """禁用自动扩缩容循环"""
+        self.enable_autoscaling = False
+        if self.debug:
+            print("[ScalingManager] Disabled autoscaling loop")
+    
+    def _get_instance_config(self, tag):
+        """
+        从启动状态配置获取实例配置
+        参考 action.py 的实现
+        
+        Args:
+            tag: 实例标签（"prompt" 或 "token"）
+        
+        Returns:
+            实例配置对象
+        """
+        if hasattr(self.application, 'start_state_manager') and \
+           self.application.start_state_manager is not None:
+            return self.application.start_state_manager.get_instance_config(tag)
+        
+        # 回退到默认配置
+        self.logger.warning(f"No start_state_manager found, using default config for {tag}")
+        
+        class InstanceConfig:
+            def __init__(self):
+                self.instance_type = "Splitwise"
+                self.max_batch_size = 64
+                self.max_batch_tokens = 4096
+                self.max_preemptions = 3
+        
+        return InstanceConfig()
+    
+    def _get_parallelism(self, tag):
+        """
+        从启动状态配置获取并行度
+        参考 action.py 的实现
+        
+        Args:
+            tag: 实例标签（"prompt" 或 "token"）
+        
+        Returns:
+            ModelParallelism 对象
+        """
+        if hasattr(self.application, 'start_state_manager') and \
+           self.application.start_state_manager is not None:
+            return self.application.start_state_manager.get_parallelism(tag)
+        
+        # 回退到默认并行度
+        self.logger.warning(f"No start_state_manager found, using default parallelism for {tag}")
+        from model import ModelParallelism
+        return ModelParallelism(pipeline_parallelism=1, tensor_parallelism=1)
 

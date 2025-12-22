@@ -1,0 +1,28 @@
+# 对比不同自动扩缩容策略的实验配置
+# 用于扫描参数对比多个策略
+
+defaults:
+  - /cluster: dgx-a100
+  - /autoscaling_policy: heteroscale  # 可以通过命令行覆盖
+  - override /trace: test_trace
+  - _self_
+
+# 启用自动扩缩容
+autoscaling:
+  enable: true
+  decision_interval: 30.0
+
+# 实验输出目录
+output_dir: results/${seed}/${autoscaling_policy._target_}/${trace.filename}
+
+# Hydra 扫描配置
+hydra:
+  sweeper:
+    params:
+      # 扫描不同的策略
+      autoscaling_policy: heteroscale,utilization_prefill,latency_ttft,periodic,no_autoscaling
+      # 扫描不同的 trace
+      trace: test_trace
+      # 扫描不同的随机种子
+      seed: 0,1,2,3,4
+

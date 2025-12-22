@@ -80,8 +80,26 @@ def init_arbiter(cfg, cluster):
     return arbiter
 
 
+def init_autoscaling_policy(cfg):
+    """
+    初始化自动扩缩容策略
+    Args:
+        cfg: 配置对象
+    Returns:
+        AutoscalingPolicy 实例或 None
+    """
+    if hasattr(cfg, 'autoscaling_policy') and cfg.autoscaling_policy is not None:
+        # 使用 Hydra instantiate 创建策略对象
+        policy = instantiate(cfg.autoscaling_policy)
+        return policy
+    return None
+
 def init_applications(cfg, cluster, router, arbiter):
     applications = {}
+
+    # 初始化自动扩缩容策略（全局共享）
+    autoscaling_policy = init_autoscaling_policy(cfg)
+    
     for application_cfg in cfg.applications:
         application = Application.from_config(application_cfg,
                                               cluster=cluster,
@@ -96,6 +114,9 @@ def init_applications(cfg, cluster, router, arbiter):
                 cluster=cluster,
                 scale_up_delay=getattr(application_cfg.scaling_manager, 'scale_up_delay', 10.0),
                 drain_check_interval=getattr(application_cfg.scaling_manager, 'drain_check_interval', 1.0),
+                autoscaling_policy=autoscaling_policy,  # 传入自动扩缩容策略
+                decision_interval=getattr(application_cfg.scaling_manager, 'decision_interval', 30.0),
+                enable_autoscaling=getattr(application_cfg.scaling_manager, 'enable_autoscaling', False),
                 debug=getattr(application_cfg, 'debug', False)
             )
             application.scaling_manager = scaling_manager
@@ -106,6 +127,20 @@ def init_applications(cfg, cluster, router, arbiter):
 
 def init_start_state(cfg, **kwargs):
     load_start_state(cfg.start_state, **kwargs)
+
+
+def start_autoscaling(applications):
+    """
+    启动所有应用的自动扩缩容循环
+    
+    应该在模拟器初始化完成后调用（在 init_start_state 之后）
+    
+    Args:
+        applications: 应用字典
+    """
+    for app_id, application in applications.items():
+        if hasattr(application, 'scaling_manager') and application.scaling_manager is not None:
+            application.scaling_manager.start_autoscaling()
 
 
 if __name__ == "__main__":

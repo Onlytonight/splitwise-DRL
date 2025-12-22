@@ -1,0 +1,16 @@
+# No Autoscaling 策略（固定实例数）
+# 用于对比实验，不进行自动扩缩容
+
+_target_: autoscaling_policies.NoAutoscalingPolicy
+
+# 固定的实例数
+fixed_prompt_instances: 1
+fixed_token_instances: 3
+
+# 冷却时间（秒）- 不适用，但保留接口
+scale_out_cooldown: 0.0
+scale_in_cooldown: 0.0
+
+# 调试模式
+debug: false
+

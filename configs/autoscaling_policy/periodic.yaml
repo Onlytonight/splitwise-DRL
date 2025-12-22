@@ -1,0 +1,17 @@
+# Periodic 自动扩缩容策略（基于时间表）
+# 硬编码的时间表，用于对比非动态策略的资源浪费
+
+_target_: autoscaling_policies.PeriodicPolicy
+
+# 时间表：[((开始小时, 开始分钟), (结束小时, 结束分钟), Prefill实例数, Decode实例数)]
+schedule:
+  - [[9, 0], [23, 0], 30, 100]   # 09:00 - 23:00: 白天高峰
+  - [[23, 0], [9, 0], 10, 20]    # 23:00 - 09:00: 夜间低谷
+
+# 冷却时间（秒）- Periodic 策略不需要，但保留接口
+scale_out_cooldown: 0.0
+scale_in_cooldown: 0.0
+
+# 调试模式
+debug: false
+

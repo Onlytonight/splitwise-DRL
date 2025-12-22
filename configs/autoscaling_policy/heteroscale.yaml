@@ -1,0 +1,29 @@
+# HeteroScale (TPS-based) 自动扩缩容策略
+# 生产环境推荐的策略，基于 Decode TPS 的比例控制
+
+_target_: autoscaling_policies.HeteroScalePolicy
+
+# 单实例目标 Decode TPS（根据实际模型和硬件调整）
+target_decode_tps_per_instance: 100.0
+
+# P/D 比例 (Prefill / Decode)
+# 例如 0.33 表示 1 个 Prefill 对应 3 个 Decode
+pd_ratio: 0.33
+
+# 扩容阈值（10% = 0.1）
+scale_out_threshold: 0.1
+
+# 缩容阈值（10% = 0.1）
+scale_in_threshold: 0.1
+
+# 实例数量限制
+min_instances: 1
+max_instances: 100
+
+# 冷却时间（秒）
+scale_out_cooldown: 180.0  # 扩容冷却 3 分钟
+scale_in_cooldown: 600.0   # 缩容冷却 10 分钟
+
+# 调试模式
+debug: false
+

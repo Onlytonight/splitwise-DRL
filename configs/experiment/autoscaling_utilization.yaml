@@ -1,0 +1,27 @@
+# 使用 Utilization-based 自动扩缩容策略的实验配置
+# 基于 Prefill GPU 利用率（类似 Kubernetes HPA）
+
+defaults:
+  - /cluster: dgx-a100
+  - /autoscaling_policy: utilization_prefill
+  - override /trace: test_trace
+  - _self_
+
+# 启用自动扩缩容
+autoscaling:
+  enable: true
+  decision_interval: 30.0
+
+# 覆盖策略参数（可选）
+autoscaling_policy:
+  target_utilization: 0.7
+  utilization_type: "prefill"
+  scale_out_threshold: 0.1
+  scale_in_threshold: 0.1
+  min_instances: 1
+  max_instances: 50
+  debug: true
+
+# 实验输出目录
+output_dir: results/${seed}/utilization/${trace.filename}/${cluster.servers.0.count}_${cluster.servers.1.count}
+

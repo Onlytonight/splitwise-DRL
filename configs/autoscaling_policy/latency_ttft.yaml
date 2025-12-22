@@ -1,0 +1,36 @@
+# Latency-based 自动扩缩容策略（基于 TTFT）
+# 基于 SLO 的负反馈控制
+
+_target_: autoscaling_policies.LatencyBasedPolicy
+
+# 目标延迟（秒）
+target_latency: 1.0
+
+# 延迟类型："ttft" 或 "tbt"
+latency_type: "ttft"
+
+# 严重超标阈值（20% = 1.2）
+panic_threshold: 1.2
+
+# 扩容阈值（10% = 1.1）
+scale_out_threshold: 1.1
+
+# 缩容阈值（10% = 0.9）
+scale_in_threshold: 0.9
+
+# 扩缩容倍数
+panic_scale_factor: 1.2   # 严重超标扩容 20%
+scale_out_factor: 1.1     # 扩容 10%
+scale_in_factor: 0.95     # 缩容 5%
+
+# 实例数量限制
+min_instances: 1
+max_instances: 100
+
+# 冷却时间（秒）
+scale_out_cooldown: 180.0
+scale_in_cooldown: 600.0
+
+# 调试模式
+debug: false
+

@@ -13,3 +13,5 @@
   scaling_manager:
     scale_up_delay: 1.0           # 扩容启动延迟（秒）
     drain_check_interval: 1.0      # 排空检查间隔（秒）
+    enable_autoscaling: ${autoscaling.enable}        # 是否启用自动扩缩容
+    decision_interval: ${autoscaling.decision_interval}  # 决策间隔（秒）

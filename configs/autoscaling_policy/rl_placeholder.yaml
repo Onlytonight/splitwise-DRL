@@ -1,0 +1,19 @@
+# RL-based 自动扩缩容策略（预留接口）
+# 用于强化学习算法
+
+_target_: autoscaling_policies.RLPolicy
+
+# 模型路径（可选）
+model_path: null
+
+# 状态和动作维度
+state_dim: 10
+action_dim: 5
+
+# 冷却时间（秒）
+scale_out_cooldown: 60.0
+scale_in_cooldown: 300.0
+
+# 调试模式
+debug: false
+
