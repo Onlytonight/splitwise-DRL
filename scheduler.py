@@ -873,27 +873,57 @@ class MixedPoolScheduler(KVScheduler):
                 #print("Found token in token+mixed", clock(), request.request_id)
                 break
 
-        #找不到时将专用实例转换为mixed实例
+        #找不到时将专用实例转换为mixed实例（但需要检查是否合适）
         if prompt_instance is None and len(self.token_instances) > 0:
-            # take an instance from token instances and add to mixed instances
-            prompt_instance = min(self.token_instances,
-                                  key=lambda instance: instance.sched_pending_tokens)
-            self.token_instances.remove(prompt_instance)
-            self.mixed_instances.append(prompt_instance)
-            prompt_instance.sched_tag = "mixed"
+            # 尝试从 token instances 转换一个负载最低的实例到 mixed
+            candidate = min(self.token_instances,
+                           key=lambda instance: instance.sched_pending_tokens)
+            
+            # 临时移动到 mixed_instances 进行检查
+            self.token_instances.remove(candidate)
+            self.mixed_instances.append(candidate)
+            original_tag = candidate.sched_tag
+            candidate.sched_tag = "mixed"
+            
+            # 检查这个实例是否合适处理 prompt_task
+            prompt_instance = self.find_best_prompt_instance([candidate], prompt_task)
+            
+            # 如果不合适，放回原来的池子
+            if prompt_instance is None:
+                self.mixed_instances.remove(candidate)
+                self.token_instances.append(candidate)
+                candidate.sched_tag = original_tag
+                if self.debug:
+                    print(f"[Backpressure] Req {request.request_id} stalled. "
+                          f"Converted token instance {candidate.instance_id} to mixed but still overloaded for prompt.")
 
         if token_instance is None and len(self.prompt_instances) > 0:
-            # take an instance from prompt instances and add to mixed instances
-            token_instance = min(self.prompt_instances,
-                                 key=lambda instance: (instance.sched_memory))
-            self.prompt_instances.remove(token_instance)
-            self.mixed_instances.append(token_instance)
-            token_instance.sched_tag = "mixed"
+            # 尝试从 prompt instances 转换一个负载最低的实例到 mixed
+            candidate = min(self.prompt_instances,
+                           key=lambda instance: instance.sched_memory)
+            
+            # 临时移动到 mixed_instances 进行检查
+            self.prompt_instances.remove(candidate)
+            self.mixed_instances.append(candidate)
+            original_tag = candidate.sched_tag
+            candidate.sched_tag = "mixed"
+            
+            # 检查这个实例是否合适处理 token_task
+            token_instance = self.find_best_token_instance([candidate], prompt_task, token_task)
+            
+            # 如果不合适，放回原来的池子
+            if token_instance is None:
+                self.mixed_instances.remove(candidate)
+                self.prompt_instances.append(candidate)
+                candidate.sched_tag = original_tag
+                if self.debug:
+                    print(f"[Backpressure] Req {request.request_id} stalled. "
+                          f"Converted prompt instance {candidate.instance_id} to mixed but still overloaded for token.")
 
         # if we didn't find any instance still, return failure (backpressure)
         if prompt_instance is None or token_instance is None:
             if self.debug:
-                print(f"[Backpressure] Req {request.request_id} stalled. All instances overloaded.")
+                print(f"[Backpressure] Req {request.request_id} stalled. All instances overloaded (including converted mixed).")
             return False
 
         if prompt_instance != token_instance:
