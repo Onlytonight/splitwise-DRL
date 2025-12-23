@@ -12,7 +12,6 @@
 
 _target_: autoscaling_policies.IndependentTPSPolicy
 
-policy_name: IndependentTPS
 # 目标 TPS
 target_prefill_tps: 10.0   # 单 Prefill 实例目标 TPS
 target_decode_tps: 100.0   # 单 Decode 实例目标 TPS

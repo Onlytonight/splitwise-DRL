@@ -5,7 +5,6 @@
 
 _target_: autoscaling_policies.HeteroScalePolicy
 
-policy_name: HeteroScale
 
 # === 比例控制参数 ===
 # 单实例目标 Decode TPS（根据实际模型和硬件调整）

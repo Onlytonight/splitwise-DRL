@@ -13,7 +13,6 @@
 
 _target_: autoscaling_policies.HPAGPUPolicy
 
-policy_name: HPAGPU
 # 目标利用率
 target_prefill_util: 0.7   # Prefill 目标利用率 (70%)
 target_decode_util: 0.7    # Decode 目标利用率 (70%)
