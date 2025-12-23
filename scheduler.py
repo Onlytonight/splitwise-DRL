@@ -217,14 +217,19 @@ class Scheduler(ABC):
 
         return array_results
 
-    def get_period_result(self):
+    def get_period_raw_result(self):
+        """
+        获取周期内原始的（未归一化的）TTFT 和 TBT 数据
+        
+        Returns:
+            tuple: ([ttft_p50, ttft_p90, ttft_p99], [tbt_p50, tbt_p90, tbt_p99])
+                  如果没有新完成的请求，返回 ([0,0,0], [0,0,0])
+        """
         new_completed_count = len(self.completed_queue)
         if new_completed_count > self.last_completed_count:
             # 有新完成的请求
             newly_completed_requests = self.completed_queue[self.last_completed_count:]
 
-            # 准备数据用于归一化
-            request_data = []
             ttfts = []
             tbts = []
 
@@ -234,10 +239,55 @@ class Scheduler(ABC):
                 ttfts.append(ttft)
 
                 # 计算TBT = (总响应时间 - TTFT) / token_size
-                # 假设token_size可以从请求中获取
                 token_size = getattr(req, 'token_size', 1)  # 提供默认值以防属性不存在
                 tbt = (req.metrics.router_response_time - ttft) / token_size if token_size > 0 else 0
                 tbts.append(tbt)
+
+            if ttfts and tbts:
+                # 计算原始数据的分位数
+                import numpy as np
+                p50_ttft = np.percentile(ttfts, 50)
+                p90_ttft = np.percentile(ttfts, 90)
+                p99_ttft = np.percentile(ttfts, 99)
+                p50_tbt = np.percentile(tbts, 50)
+                p90_tbt = np.percentile(tbts, 90)
+                p99_tbt = np.percentile(tbts, 99)
+
+                # 更新计数器
+                self.last_completed_count = new_completed_count
+                
+                return [p50_ttft, p90_ttft, p99_ttft], [p50_tbt, p90_tbt, p99_tbt]
+
+            self.last_completed_count = new_completed_count
+
+        # 如果没有新完成的请求，返回0
+        return [0, 0, 0], [0, 0, 0]
+    
+    def get_period_normalized_result(self):
+        """
+        获取周期内归一化的 TTFT 和 TBT 数据
+        
+        Returns:
+            tuple: ([normalized_ttft_p50, normalized_ttft_p90, normalized_ttft_p99], 
+                   [normalized_tbt_p50, normalized_tbt_p90, normalized_tbt_p99],
+                   [ttft_over_6_ratio, tbt_over_5_ratio])
+                  如果没有新完成的请求，返回 ([0,0,0], [0,0,0], [0,0])
+        """
+        new_completed_count = len(self.completed_queue)
+        if new_completed_count > self.last_completed_count:
+            # 有新完成的请求
+            newly_completed_requests = self.completed_queue[self.last_completed_count:]
+
+            # 准备数据用于归一化
+            request_data = []
+
+            for req in newly_completed_requests:
+                # 获取TTFT
+                ttft = req.metrics.TTFT
+
+                # 计算TBT = (总响应时间 - TTFT) / token_size
+                token_size = getattr(req, 'token_size', 1)  # 提供默认值以防属性不存在
+                tbt = (req.metrics.router_response_time - ttft) / token_size if token_size > 0 else 0
 
                 # 收集数据用于归一化
                 request_data.append({
@@ -275,13 +325,27 @@ class Scheduler(ABC):
 
                 # 返回归一化后的p50和p99分位数以及超出阈值的比例
                 self.last_completed_count = new_completed_count
-                return [p50_normalized_ttft,p90_normalized_ttft, p99_normalized_ttft], [p50_normalized_tbt,
-                        p90_normalized_tbt,p99_normalized_tbt],[ttft_over_6_ratio,tbt_over_5_ratio]
+                return [p50_normalized_ttft, p90_normalized_ttft, p99_normalized_ttft], \
+                       [p50_normalized_tbt, p90_normalized_tbt, p99_normalized_tbt], \
+                       [ttft_over_6_ratio, tbt_over_5_ratio]
 
             self.last_completed_count = new_completed_count
 
         # 如果没有新完成的请求，返回0
-        return [0,0,0], [0,0,0], [0,0]
+        return [0, 0, 0], [0, 0, 0], [0, 0]
+    
+    def get_period_result(self):
+        """
+        获取周期内归一化的 TTFT 和 TBT 数据（保持向后兼容）
+        
+        这是一个向后兼容的包装函数，内部调用 get_period_normalized_result()
+        
+        Returns:
+            tuple: ([normalized_ttft_p50, normalized_ttft_p90, normalized_ttft_p99], 
+                   [normalized_tbt_p50, normalized_tbt_p90, normalized_tbt_p99],
+                   [ttft_over_6_ratio, tbt_over_5_ratio])
+        """
+        return self.get_period_normalized_result()
 
 
 
@@ -1321,9 +1385,9 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         # 设置调整阈值，可根据实际情况调整
         adjust_threshold = 5  # 当一个指标是另一个的1.5倍以上时进行调整
-        p50_normalized_ttft, p50_normalized_tbt = self.get_period_result()
-        p50_normalized_ttft = p50_normalized_ttft[0]
-        p50_normalized_tbt = p50_normalized_tbt[0]
+        ttft_list, tbt_list, vio_slo_rate = self.get_period_result()
+        p50_normalized_ttft = ttft_list[0]
+        p50_normalized_tbt = tbt_list[0]
 
         # 确保两个指标都有效(不为0)
         if p50_normalized_ttft > 0 and p50_normalized_tbt > 0:

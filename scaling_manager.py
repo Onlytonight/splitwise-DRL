@@ -510,32 +510,43 @@ class ScalingManager:
         metrics['decode_gpu_util'] = decode_gpu_util
         
         # 收集延迟指标（TTFT 和 TBT）
-        # 参考 RL/state.py: 从 scheduler.get_period_result() 获取
-        if hasattr(scheduler, 'get_period_result'):
+        # 使用原始数据（未归一化）用于扩缩容决策
+        # 参考 RL/state.py: 从 scheduler 获取
+        if hasattr(scheduler, 'get_period_raw_result'):
             try:
-                ttft, tbt, vio_slo_rate = scheduler.get_period_result()
-                # ttft 和 tbt 是列表 [p50, p90, p99]，使用 p50 作为代表值
-                metrics['ttft'] = ttft[0] if len(ttft) > 0 else 0.0
-                metrics['tbt'] = tbt[0] if len(tbt) > 0 else 0.0
+                # 获取原始的（未归一化的）延迟数据
+                ttft_raw, tbt_raw = scheduler.get_period_raw_result()
+                # ttft_raw 和 tbt_raw 是列表 [p50, p90, p99]，使用 p50 作为代表值
+                metrics['ttft'] = ttft_raw[0] if len(ttft_raw) > 0 else 0.0
+                metrics['tbt'] = tbt_raw[0] if len(tbt_raw) > 0 else 0.0
                 # 也保存完整的分位数信息，供高级策略使用
-                metrics['ttft_percentiles'] = ttft  # [p50, p90, p99]
-                metrics['tbt_percentiles'] = tbt    # [p50, p90, p99]
-                metrics['slo_violation_rate'] = vio_slo_rate  # [ttft_vio, tbt_vio]
+                metrics['ttft_percentiles'] = ttft_raw  # [p50, p90, p99]
+                metrics['tbt_percentiles'] = tbt_raw    # [p50, p90, p99]
+                
+                # 如果需要归一化数据和 SLO 违规率，也可以获取
+                if hasattr(scheduler, 'get_period_normalized_result'):
+                    try:
+                        ttft_norm, tbt_norm, vio_slo_rate = scheduler.get_period_normalized_result()
+                        metrics['ttft_normalized'] = ttft_norm[0] if len(ttft_norm) > 0 else 0.0
+                        metrics['tbt_normalized'] = tbt_norm[0] if len(tbt_norm) > 0 else 0.0
+                        metrics['ttft_normalized_percentiles'] = ttft_norm
+                        metrics['tbt_normalized_percentiles'] = tbt_norm
+                        metrics['slo_violation_rate'] = vio_slo_rate  # [ttft_vio, tbt_vio]
+                    except:
+                        pass
             except Exception as e:
                 if self.debug:
-                    self.logger.warning(f"Failed to get period result: {e}")
+                    self.logger.warning(f"Failed to get period raw result: {e}")
                 metrics['ttft'] = 0.0
                 metrics['tbt'] = 0.0
                 metrics['ttft_percentiles'] = [0.0, 0.0, 0.0]
                 metrics['tbt_percentiles'] = [0.0, 0.0, 0.0]
-                metrics['slo_violation_rate'] = [0.0, 0.0]
         else:
-            # 降级方案：如果 scheduler 没有 get_period_result 方法
+            # 降级方案：如果 scheduler 没有 get_period_raw_result 方法
             metrics['ttft'] = 0.0
             metrics['tbt'] = 0.0
             metrics['ttft_percentiles'] = [0.0, 0.0, 0.0]
             metrics['tbt_percentiles'] = [0.0, 0.0, 0.0]
-            metrics['slo_violation_rate'] = [0.0, 0.0]
         
         # 队列长度
         total_pending = sum(len(inst.pending_queue) for inst in self.application.instances)

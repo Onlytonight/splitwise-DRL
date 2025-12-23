@@ -123,25 +123,32 @@ class AutoscalingPolicy(ABC):
 
 class HeteroScalePolicy(AutoscalingPolicy):
     """
-    HeteroScale 策略 (TPS-based)
+    HeteroScale 策略 (TPS-based + Latency-based)
     
-    基于 Decode TPS 的比例控制，维持固定的 Prefill/Decode 比例
+    核心机制：
+    1. 比例控制（主推力）：基于 Decode TPS 计算期望实例数
+       - I_new_total = I_curr × (TPS_curr / TPS_target)
+       - 维持固定的 P/D 比例
     
-    核心思想：
-    1. 使用 Decode TPS 作为负载指标（信噪比最高、线性相关）
-    2. 比例控制算法计算期望实例数
-    3. 强制维持固定的 P/D 比例
+    2. 延迟触发（安全网）：基于 TBT 的负反馈控制
+       - 当 TBT > 1.2 × SLO 时，直接按百分比扩容（1.2倍）
+       - 快速响应突发流量
     
     参考：HeteroScale 论文 Algorithm 2
     """
     
     def __init__(self,
                  target_decode_tps_per_instance: float = 100.0,  # 单实例目标 Decode TPS
-                 pd_ratio: float = 0.33,  # P/D 比例 (Prefill / Decode)
+                 pd_ratio: float = 0.33,  # P/D 比例 (Prefill / Decode)，0.33 表示 1:3
                  scale_out_threshold: float = 0.1,  # 扩容阈值 (10%)
                  scale_in_threshold: float = 0.1,   # 缩容阈值 (10%)
                  min_instances: int = 1,            # 最小实例数
                  max_instances: int = 100,          # 最大实例数
+                 # 延迟触发参数
+                 enable_latency_trigger: bool = True,  # 是否启用延迟触发
+                 tbt_slo: float = 0.04,              # TBT SLO (秒)
+                 latency_panic_threshold: float = 1.2,  # 延迟恐慌阈值 (1.2x)
+                 latency_panic_scale_factor: float = 1.2,  # 恐慌时扩容倍数
                  **kwargs):
         super().__init__(name="HeteroScale", **kwargs)
         
@@ -151,56 +158,118 @@ class HeteroScalePolicy(AutoscalingPolicy):
         self.scale_in_threshold = scale_in_threshold
         self.min_instances = min_instances
         self.max_instances = max_instances
+        
+        # 延迟触发参数
+        self.enable_latency_trigger = enable_latency_trigger
+        self.tbt_slo = tbt_slo
+        self.latency_panic_threshold = latency_panic_threshold
+        self.latency_panic_scale_factor = latency_panic_scale_factor
     
     def decide(self, metrics: Dict) -> ScalingAction:
         """
-        基于 Decode TPS 的比例控制算法
+        HeteroScale 决策算法
+        
+        包含两个机制：
+        1. 比例控制（主推力）：基于 TPS 计算目标实例数
+        2. 延迟触发（安全网）：基于 TBT 的紧急扩容
         
         公式：
-        I_expected = M_current_total / M_target
-        R = I_expected / I_current
+        I_new_total = I_curr × (TPS_curr / TPS_target)
+        I_prefill = ⌈I_new_total / (1 + 1/pd_ratio)⌉
+        I_decode = I_prefill × (1/pd_ratio)
         
-        扩容条件: R > 1 + θ_out
+        扩容条件: R > 1 + θ_out 或 TBT > 1.2 × SLO
         缩容条件: R < 1 - θ_in
         """
         current_token_instances = metrics.get('current_token_instances', 1)
         current_prompt_instances = metrics.get('current_prompt_instances', 0)
-        decode_tps_total = metrics.get('decode_tps', 0.0)
+        decode_tps_total = metrics.get('decode_tps', 0.0)  # 总的 TPS（所有 decode 实例）
+        tbt = metrics.get('tbt', 0.0)  # Time Between Tokens
         
         # 防止除零
         if current_token_instances == 0:
             current_token_instances = 1
         
-        # 计算期望的 Decode 实例数
-        # I_expected = M_total / M_target
-        expected_token_instances = decode_tps_total / self.target_decode_tps_per_instance
+        # === 1. 延迟触发检查（安全网，优先级最高）===
+        if self.enable_latency_trigger and tbt > 0:
+            tbt_threshold = self.tbt_slo * self.latency_panic_threshold
+            if tbt > tbt_threshold and self.can_scale_out():
+                # 紧急扩容：直接按百分比增加，不经过比例计算
+                target_prompt = int(current_prompt_instances * self.latency_panic_scale_factor)
+                target_token = int(current_token_instances * self.latency_panic_scale_factor)
+                
+                # 应用上下限
+                target_prompt = max(self.min_instances, min(target_prompt, self.max_instances))
+                target_token = max(self.min_instances, min(target_token, self.max_instances))
+                
+                self.record_scale_out()
+                
+                reason = (f"LATENCY_PANIC: tbt={tbt:.3f}s > {tbt_threshold:.3f}s "
+                         f"(scale by {self.latency_panic_scale_factor}x)")
+                
+                if self.debug:
+                    self.logger.debug(
+                        f"[HeteroScale] {reason}, "
+                        f"prompt: {current_prompt_instances}->{target_prompt}, "
+                        f"token: {current_token_instances}->{target_token}"
+                    )
+                
+                return ScalingAction(
+                    decision=ScalingDecision.SCALE_OUT,
+                    target_prompt_instances=target_prompt,
+                    target_token_instances=target_token,
+                    reason=reason
+                )
+        
+        # === 2. 比例控制（主推力）===
+        # 计算目标总实例数（基于 TPS）
+        # I_new_total = TPS_curr / TPS_target_per_instance
+        total_instances_needed = decode_tps_total / self.target_decode_tps_per_instance
+        
+        # 根据 P/D 比例分配
+        # pd_ratio = P/D，例如 0.33 表示 1:3
+        # 总份数 = 1 + (1/pd_ratio) = 1 + 3 = 4
+        # Prefill 份数 = 1，Decode 份数 = 3
+        if self.pd_ratio > 0:
+            total_parts = 1 + (1 / self.pd_ratio)  # 例如：1 + 3 = 4
+            expected_prompt_instances = total_instances_needed / total_parts
+            expected_token_instances = expected_prompt_instances * (1 / self.pd_ratio)
+        else:
+            # 如果 pd_ratio = 0，则只有 Decode 实例
+            expected_prompt_instances = 0
+            expected_token_instances = total_instances_needed
         
         # 计算变化率
-        # R = I_expected / I_current
-        ratio = expected_token_instances / current_token_instances
+        current_total = current_prompt_instances + current_token_instances
+        expected_total = expected_prompt_instances + expected_token_instances
+        
+        if current_total > 0:
+            ratio = expected_total / current_total
+        else:
+            ratio = 2.0  # 如果当前没有实例，直接扩容
         
         if self.debug:
             self.logger.debug(
                 f"[HeteroScale] decode_tps={decode_tps_total:.2f}, "
-                f"current_token={current_token_instances}, "
-                f"expected_token={expected_token_instances:.2f}, "
+                f"current: P={current_prompt_instances} T={current_token_instances}, "
+                f"expected: P={expected_prompt_instances:.2f} T={expected_token_instances:.2f}, "
                 f"ratio={ratio:.3f}"
             )
         
-        # 决策逻辑
+        # === 决策逻辑 ===
         # 扩容条件: R > 1 + θ_out
         if ratio > (1 + self.scale_out_threshold) and self.can_scale_out():
+            target_prompt = int(round(expected_prompt_instances))
             target_token = int(round(expected_token_instances))
-            target_token = max(self.min_instances, min(target_token, self.max_instances))
             
-            # 根据 P/D 比例计算 Prefill 实例数
-            target_prompt = int(round(target_token * self.pd_ratio))
+            # 应用上下限
             target_prompt = max(0, min(target_prompt, self.max_instances))
+            target_token = max(self.min_instances, min(target_token, self.max_instances))
             
             self.record_scale_out()
             
-            reason = (f"decode_tps={decode_tps_total:.1f} > "
-                     f"target={current_token_instances * self.target_decode_tps_per_instance:.1f}")
+            current_target_tps = current_token_instances * self.target_decode_tps_per_instance
+            reason = (f"decode_tps={decode_tps_total:.1f} > target={current_target_tps:.1f}")
             
             return ScalingAction(
                 decision=ScalingDecision.SCALE_OUT,
@@ -211,17 +280,17 @@ class HeteroScalePolicy(AutoscalingPolicy):
         
         # 缩容条件: R < 1 - θ_in
         elif ratio < (1 - self.scale_in_threshold) and self.can_scale_in():
+            target_prompt = int(round(expected_prompt_instances))
             target_token = int(round(expected_token_instances))
-            target_token = max(self.min_instances, min(target_token, self.max_instances))
             
-            # 根据 P/D 比例计算 Prefill 实例数
-            target_prompt = int(round(target_token * self.pd_ratio))
+            # 应用上下限
             target_prompt = max(0, min(target_prompt, self.max_instances))
+            target_token = max(self.min_instances, min(target_token, self.max_instances))
             
             self.record_scale_in()
             
-            reason = (f"decode_tps={decode_tps_total:.1f} < "
-                     f"target={current_token_instances * self.target_decode_tps_per_instance:.1f}")
+            current_target_tps = current_token_instances * self.target_decode_tps_per_instance
+            reason = (f"decode_tps={decode_tps_total:.1f} < target={current_target_tps:.1f}")
             
             return ScalingAction(
                 decision=ScalingDecision.SCALE_IN,
