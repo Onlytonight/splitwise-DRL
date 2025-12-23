@@ -1,0 +1,37 @@
+# Baseline 3: Pure Latency Scaling (纯延迟驱动/负反馈)
+# 
+# 特点：
+# - 不参考吞吐量，只看用户卡不卡的反应式方法
+# - 监控 P90 TBT (Time Between Tokens)
+# - 使用步进式扩缩容（每次加/减固定数量的 Pod）
+# 
+# 预期失败点：
+# - 严重的扩缩容振荡（Flapping）
+# - 延迟和 Pod 数量是非线性关系
+# - 加了 2 个 Pod 后，延迟可能瞬间降到极低，触发缩容
+# - 缩容后延迟又瞬间飙升，导致系统不停地在"增-删-增"之间跳变
+
+_target_: autoscaling_policies.PureLatencyPolicy
+
+# TBT SLO（秒）
+tbt_slo: 0.04
+
+# 扩缩容阈值
+scale_out_threshold: 1.1   # 扩容阈值 (TBT > SLO × 1.1)
+scale_in_threshold: 0.8    # 缩容阈值 (TBT < SLO × 0.8)
+
+# 扩缩容步长
+scale_out_step: 2          # 扩容步长（每次加 2 个实例）
+scale_in_step: 1           # 缩容步长（每次减 1 个实例）
+
+# 实例数上下限
+min_instances: 1
+max_instances: 100
+
+# 冷却时间（秒）
+scale_out_cooldown: 180.0  # 扩容冷却时间 (3分钟)
+scale_in_cooldown: 600.0   # 缩容冷却时间 (10分钟)
+
+# 调试模式
+debug: false
+

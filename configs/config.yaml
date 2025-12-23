@@ -10,7 +10,7 @@ defaults:
   - applications: solo
   - trace: test_trace
   - start_state: orca
-  - autoscaling_policy: heteroscale  # 自动扩缩容策略
+  - autoscaling_policy: heteroscale #independent_tps #hpa_gpu #heteroscale  # 自动扩缩容策略
   - override hydra/launcher: ray
   - _self_
 

@@ -1,0 +1,34 @@
+# Baseline 1: HPA-GPU (基于硬件利用率的传统方式)
+# 
+# 这是最常见的 Kubernetes HPA 默认方式
+# 
+# 特点：
+# - Prefill 池和 Decode 池完全独立，互不通信
+# - 各自监控自己的 GPU 利用率
+# 
+# 预期失败点：
+# - Decode 池即使在没流量时也不缩容
+# - 因为 Decode GPU 利用率受 KV Cache 显存管理影响
+# - 即使负载低，利用率也常年维持在 80%-90%
+
+_target_: autoscaling_policies.HPAGPUPolicy
+
+# 目标利用率
+target_prefill_util: 0.7   # Prefill 目标利用率 (70%)
+target_decode_util: 0.7    # Decode 目标利用率 (70%)
+
+# 扩缩容阈值
+scale_out_threshold: 0.1   # 扩容阈值 (10%)
+scale_in_threshold: 0.1    # 缩容阈值 (10%)
+
+# 实例数上下限
+min_instances: 1
+max_instances: 100
+
+# 冷却时间（秒）
+scale_out_cooldown: 180.0  # 扩容冷却时间 (3分钟)
+scale_in_cooldown: 600.0   # 缩容冷却时间 (10分钟)
+
+# 调试模式
+debug: false
+

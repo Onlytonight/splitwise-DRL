@@ -1,0 +1,33 @@
+# Baseline 2: Independent Scaling (基于 TPS 但不协同)
+# 
+# 特点：
+# - Prefill 池监控自己的 Prefill TPS
+# - Decode 池监控自己的 Decode TPS
+# - 两个池子完全独立，互不通信
+# 
+# 预期失败点：
+# - P/D 比例剧烈抖动
+# - 如果 P 池扩容快而 D 池扩容慢，P 池处理了大量 Prompt 塞给 D 池
+# - D 池接不住，导致 TBT 飙升
+
+_target_: autoscaling_policies.IndependentTPSPolicy
+
+# 目标 TPS
+target_prefill_tps: 10.0   # 单 Prefill 实例目标 TPS
+target_decode_tps: 100.0   # 单 Decode 实例目标 TPS
+
+# 扩缩容阈值
+scale_out_threshold: 0.1   # 扩容阈值 (10%)
+scale_in_threshold: 0.1    # 缩容阈值 (10%)
+
+# 实例数上下限
+min_instances: 1
+max_instances: 100
+
+# 冷却时间（秒）
+scale_out_cooldown: 180.0  # 扩容冷却时间 (3分钟)
+scale_in_cooldown: 600.0   # 缩容冷却时间 (10分钟)
+
+# 调试模式
+debug: false
+

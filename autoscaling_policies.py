@@ -309,30 +309,35 @@ class HeteroScalePolicy(AutoscalingPolicy):
             )
 
 
-class UtilizationBasedPolicy(AutoscalingPolicy):
+class HPAGPUPolicy(AutoscalingPolicy):
     """
-    基于资源利用率的扩缩容策略（类似 Kubernetes HPA）
+    Baseline 1: HPA-GPU (基于硬件利用率的传统方式)
     
-    使用 GPU 利用率作为指标，采用比例控制算法
+    这是最常见的 Kubernetes HPA 默认方式
     
-    注意：
-    - Prefill Util 与负载相关性较好
-    - Decode Util 通常失效（Memory-bound，即使低负载也可能显示高利用率）
+    特点：
+    - Prefill 池和 Decode 池完全独立，互不通信
+    - 各自监控自己的 GPU 利用率
+    - 采用比例控制公式：I_target = ⌈I_curr × (Util_observed / Util_target)⌉
+    
+    预期失败点：
+    - Decode 池即使在没流量时也不缩容
+    - 因为 Decode GPU 利用率受 KV Cache 显存管理影响
+    - 即使负载低，利用率也常年维持在 80%-90% (Memory-bound)
     """
     
     def __init__(self,
-                 target_utilization: float = 0.7,   # 目标利用率 (70%)
-                 utilization_type: str = "prefill", # "prefill" 或 "decode"
-                 scale_out_threshold: float = 0.1,  # 扩容阈值
-                 scale_in_threshold: float = 0.1,   # 缩容阈值
+                 target_prefill_util: float = 0.7,   # Prefill 目标利用率 (70%)
+                 target_decode_util: float = 0.7,    # Decode 目标利用率 (70%)
+                 scale_out_threshold: float = 0.1,   # 扩容阈值
+                 scale_in_threshold: float = 0.1,    # 缩容阈值
                  min_instances: int = 1,
                  max_instances: int = 100,
                  **kwargs):
-        name = f"Utilization-{utilization_type}"
-        super().__init__(name=name, **kwargs)
+        super().__init__(name="HPA-GPU", **kwargs)
         
-        self.target_utilization = target_utilization
-        self.utilization_type = utilization_type
+        self.target_prefill_util = target_prefill_util
+        self.target_decode_util = target_decode_util
         self.scale_out_threshold = scale_out_threshold
         self.scale_in_threshold = scale_in_threshold
         self.min_instances = min_instances
@@ -340,99 +345,326 @@ class UtilizationBasedPolicy(AutoscalingPolicy):
     
     def decide(self, metrics: Dict) -> ScalingAction:
         """
-        基于利用率的比例控制算法
+        HPA-GPU 决策算法：Prefill 池和 Decode 池独立扩缩容
         
-        公式：
-        I_expected = I_current × (Util_current / Util_target)
+        公式：I_target = ⌈I_curr × (Util_observed / Util_target)⌉
+        
+        特性：完全独立，互不通信
         """
-        if self.utilization_type == "prefill":
-            current_instances = metrics.get('current_prompt_instances', 1)
-            current_util = metrics.get('prefill_gpu_util', 0.0)
-            metric_key = 'prefill_gpu_util'
-        else:  # decode
-            current_instances = metrics.get('current_token_instances', 1)
-            current_util = metrics.get('decode_gpu_util', 0.0)
-            metric_key = 'decode_gpu_util'
+        # 获取当前实例数和利用率
+        current_prompt_instances = metrics.get('current_prompt_instances', 0)
+        current_token_instances = metrics.get('current_token_instances', 1)
+        prefill_util = metrics.get('prefill_gpu_util', 0.0)
+        decode_util = metrics.get('decode_gpu_util', 0.0)
         
-        if current_instances == 0:
-            current_instances = 1
+        # 防止除零
+        if current_prompt_instances == 0:
+            current_prompt_instances = 1
+        if current_token_instances == 0:
+            current_token_instances = 1
         
-        # 计算期望实例数
-        # I_expected = I_current × (Util_current / Util_target)
-        expected_instances = current_instances * (current_util / self.target_utilization)
+        # === Prefill 池独立决策 ===
+        expected_prompt = current_prompt_instances * (prefill_util / self.target_prefill_util)
+        prompt_ratio = expected_prompt / current_prompt_instances
         
-        # 计算变化率
-        ratio = expected_instances / current_instances
+        # === Decode 池独立决策 ===
+        expected_token = current_token_instances * (decode_util / self.target_decode_util)
+        token_ratio = expected_token / current_token_instances
         
         if self.debug:
             self.logger.debug(
-                f"[{self.name}] util={current_util:.2f}, "
-                f"current={current_instances}, "
-                f"expected={expected_instances:.2f}, "
-                f"ratio={ratio:.3f}"
+                f"[HPA-GPU] Prefill: util={prefill_util:.2f}, current={current_prompt_instances}, "
+                f"expected={expected_prompt:.2f}, ratio={prompt_ratio:.3f} | "
+                f"Decode: util={decode_util:.2f}, current={current_token_instances}, "
+                f"expected={expected_token:.2f}, ratio={token_ratio:.3f}"
             )
         
+        # 判断是否需要扩缩容
+        need_scale_out = (prompt_ratio > (1 + self.scale_out_threshold) or 
+                         token_ratio > (1 + self.scale_out_threshold))
+        need_scale_in = (prompt_ratio < (1 - self.scale_in_threshold) and 
+                        token_ratio < (1 - self.scale_in_threshold))
+        
+        # 计算目标实例数
+        target_prompt = int(round(expected_prompt))
+        target_token = int(round(expected_token))
+        
+        # 应用上下限
+        target_prompt = max(0, min(target_prompt, self.max_instances))
+        target_token = max(self.min_instances, min(target_token, self.max_instances))
+        
         # 扩容
-        if ratio > (1 + self.scale_out_threshold) and self.can_scale_out():
-            target = int(round(expected_instances))
-            target = max(self.min_instances, min(target, self.max_instances))
-            
+        if need_scale_out and self.can_scale_out():
             self.record_scale_out()
+            reason = (f"Prefill: util={prefill_util:.2f}/{self.target_prefill_util:.2f}, "
+                     f"Decode: util={decode_util:.2f}/{self.target_decode_util:.2f}")
             
-            reason = f"{metric_key}={current_util:.2f} > target={self.target_utilization:.2f}"
-            
-            if self.utilization_type == "prefill":
-                return ScalingAction(
-                    decision=ScalingDecision.SCALE_OUT,
-                    target_prompt_instances=target,
-                    target_token_instances=metrics.get('current_token_instances', 1),
-                    reason=reason
-                )
-            else:
-                return ScalingAction(
-                    decision=ScalingDecision.SCALE_OUT,
-                    target_prompt_instances=metrics.get('current_prompt_instances', 0),
-                    target_token_instances=target,
-                    reason=reason
-                )
+            return ScalingAction(
+                decision=ScalingDecision.SCALE_OUT,
+                target_prompt_instances=target_prompt,
+                target_token_instances=target_token,
+                reason=reason
+            )
         
         # 缩容
-        elif ratio < (1 - self.scale_in_threshold) and self.can_scale_in():
-            target = int(round(expected_instances))
-            target = max(self.min_instances, min(target, self.max_instances))
-            
+        elif need_scale_in and self.can_scale_in():
             self.record_scale_in()
+            reason = (f"Prefill: util={prefill_util:.2f}/{self.target_prefill_util:.2f}, "
+                     f"Decode: util={decode_util:.2f}/{self.target_decode_util:.2f}")
             
-            reason = f"{metric_key}={current_util:.2f} < target={self.target_utilization:.2f}"
-            
-            if self.utilization_type == "prefill":
-                return ScalingAction(
-                    decision=ScalingDecision.SCALE_IN,
-                    target_prompt_instances=target,
-                    target_token_instances=metrics.get('current_token_instances', 1),
-                    reason=reason
-                )
-            else:
-                return ScalingAction(
-                    decision=ScalingDecision.SCALE_IN,
-                    target_prompt_instances=metrics.get('current_prompt_instances', 0),
-                    target_token_instances=target,
-                    reason=reason
-                )
+            return ScalingAction(
+                decision=ScalingDecision.SCALE_IN,
+                target_prompt_instances=target_prompt,
+                target_token_instances=target_token,
+                reason=reason
+            )
         
         # 维持不变
         else:
             return ScalingAction(
                 decision=ScalingDecision.NO_CHANGE,
-                target_prompt_instances=metrics.get('current_prompt_instances', 0),
-                target_token_instances=metrics.get('current_token_instances', 1),
+                target_prompt_instances=current_prompt_instances,
+                target_token_instances=current_token_instances,
+                reason="within threshold"
+            )
+
+
+class IndependentTPSPolicy(AutoscalingPolicy):
+    """
+    Baseline 2: Independent Scaling (基于 TPS 但不协同)
+    
+    特点：
+    - Prefill 池监控自己的 Prefill TPS
+    - Decode 池监控自己的 Decode TPS
+    - 两个池子完全独立，互不通信
+    
+    公式：
+    - I_p_target = I_p_curr × (Prefill_TPS / P_TPS_Target)
+    - I_d_target = I_d_curr × (Decode_TPS / D_TPS_Target)
+    
+    预期失败点：
+    - P/D 比例剧烈抖动
+    - 如果 P 池扩容快而 D 池扩容慢，P 池处理了大量 Prompt 塞给 D 池
+    - D 池接不住，导致 TBT 飙升
+    """
+    
+    def __init__(self,
+                 target_prefill_tps: float = 30.0,   # 单 Prefill 实例目标 TPS
+                 target_decode_tps: float = 100.0,   # 单 Decode 实例目标 TPS
+                 scale_out_threshold: float = 0.1,   # 扩容阈值
+                 scale_in_threshold: float = 0.1,    # 缩容阈值
+                 min_instances: int = 1,
+                 max_instances: int = 100,
+                 **kwargs):
+        super().__init__(name="IndependentTPS", **kwargs)
+        
+        self.target_prefill_tps = target_prefill_tps
+        self.target_decode_tps = target_decode_tps
+        self.scale_out_threshold = scale_out_threshold
+        self.scale_in_threshold = scale_in_threshold
+        self.min_instances = min_instances
+        self.max_instances = max_instances
+    
+    def decide(self, metrics: Dict) -> ScalingAction:
+        """
+        Independent TPS 决策算法：P 池只管自己的 TPS，D 池只管自己的 TPS
+        
+        公式：
+        - I_p_target = I_p_curr × (Prefill_TPS / P_TPS_Target)
+        - I_d_target = I_d_curr × (Decode_TPS / D_TPS_Target)
+        """
+        # 获取当前实例数和 TPS
+        current_prompt_instances = metrics.get('current_prompt_instances', 0)
+        current_token_instances = metrics.get('current_token_instances', 1)
+        prefill_tps = metrics.get('prefill_tps', 0.0)  # Prefill TPS
+        decode_tps = metrics.get('decode_tps', 0.0)    # Decode TPS
+        
+        # 防止除零
+        if current_prompt_instances == 0:
+            current_prompt_instances = 1
+        if current_token_instances == 0:
+            current_token_instances = 1
+        
+        # === Prefill 池独立决策 ===
+        # Prefill TPS 是总的，需要计算单实例 TPS
+        prefill_tps_per_instance = prefill_tps / current_prompt_instances if prefill_tps > 0 else 0
+        expected_prompt = current_prompt_instances * (prefill_tps_per_instance / self.target_prefill_tps) if self.target_prefill_tps > 0 else current_prompt_instances
+        prompt_ratio = expected_prompt / current_prompt_instances
+        
+        # === Decode 池独立决策 ===
+        # Decode TPS 是总的，需要计算单实例 TPS
+        decode_tps_per_instance = decode_tps / current_token_instances if decode_tps > 0 else 0
+        expected_token = current_token_instances * (decode_tps_per_instance / self.target_decode_tps) if self.target_decode_tps > 0 else current_token_instances
+        token_ratio = expected_token / current_token_instances
+        
+        if self.debug:
+            self.logger.debug(
+                f"[IndependentTPS] Prefill: tps={prefill_tps:.2f}, per_inst={prefill_tps_per_instance:.2f}, "
+                f"current={current_prompt_instances}, expected={expected_prompt:.2f}, ratio={prompt_ratio:.3f} | "
+                f"Decode: tps={decode_tps:.2f}, per_inst={decode_tps_per_instance:.2f}, "
+                f"current={current_token_instances}, expected={expected_token:.2f}, ratio={token_ratio:.3f}"
+            )
+        
+        # 判断是否需要扩缩容
+        need_scale_out = (prompt_ratio > (1 + self.scale_out_threshold) or 
+                         token_ratio > (1 + self.scale_out_threshold))
+        need_scale_in = (prompt_ratio < (1 - self.scale_in_threshold) and 
+                        token_ratio < (1 - self.scale_in_threshold))
+        
+        # 计算目标实例数
+        target_prompt = int(round(expected_prompt))
+        target_token = int(round(expected_token))
+        
+        # 应用上下限
+        target_prompt = max(0, min(target_prompt, self.max_instances))
+        target_token = max(self.min_instances, min(target_token, self.max_instances))
+        
+        # 扩容
+        if need_scale_out and self.can_scale_out():
+            self.record_scale_out()
+            reason = (f"Prefill: tps={prefill_tps:.1f} (target={self.target_prefill_tps * current_prompt_instances:.1f}), "
+                     f"Decode: tps={decode_tps:.1f} (target={self.target_decode_tps * current_token_instances:.1f})")
+            
+            return ScalingAction(
+                decision=ScalingDecision.SCALE_OUT,
+                target_prompt_instances=target_prompt,
+                target_token_instances=target_token,
+                reason=reason
+            )
+        
+        # 缩容
+        elif need_scale_in and self.can_scale_in():
+            self.record_scale_in()
+            reason = (f"Prefill: tps={prefill_tps:.1f} (target={self.target_prefill_tps * current_prompt_instances:.1f}), "
+                     f"Decode: tps={decode_tps:.1f} (target={self.target_decode_tps * current_token_instances:.1f})")
+            
+            return ScalingAction(
+                decision=ScalingDecision.SCALE_IN,
+                target_prompt_instances=target_prompt,
+                target_token_instances=target_token,
+                reason=reason
+            )
+        
+        # 维持不变
+        else:
+            return ScalingAction(
+                decision=ScalingDecision.NO_CHANGE,
+                target_prompt_instances=current_prompt_instances,
+                target_token_instances=current_token_instances,
+                reason="within threshold"
+            )
+
+
+class PureLatencyPolicy(AutoscalingPolicy):
+    """
+    Baseline 3: Pure Latency Scaling (纯延迟驱动/负反馈)
+    
+    特点：
+    - 不参考吞吐量，只看用户卡不卡的反应式方法
+    - 监控 P90 TBT (Time Between Tokens)
+    - 使用步进式扩缩容（每次加/减固定数量的 Pod）
+    
+    扩缩逻辑：
+    - If TBT > SLO × 1.1: Count = Count + Step (例如每次加 2 个 Pod)
+    - If TBT < SLO × 0.8: Count = Count - Step (例如每次减 1 个 Pod)
+    
+    预期失败点：
+    - 严重的扩缩容振荡（Flapping）
+    - 延迟和 Pod 数量是非线性关系
+    - 加了 2 个 Pod 后，延迟可能瞬间降到极低，触发缩容
+    - 缩容后延迟又瞬间飙升，导致系统不停地在"增-删-增"之间跳变
+    """
+    
+    def __init__(self,
+                 tbt_slo: float = 0.04,             # TBT SLO (秒)
+                 scale_out_threshold: float = 1.1,  # 扩容阈值 (10%)
+                 scale_in_threshold: float = 0.8,   # 缩容阈值 (20%)
+                 scale_out_step: int = 2,           # 扩容步长（每次加 2 个）
+                 scale_in_step: int = 1,            # 缩容步长（每次减 1 个）
+                 min_instances: int = 1,
+                 max_instances: int = 100,
+                 **kwargs):
+        super().__init__(name="PureLatency", **kwargs)
+        
+        self.tbt_slo = tbt_slo
+        self.scale_out_threshold = scale_out_threshold
+        self.scale_in_threshold = scale_in_threshold
+        self.scale_out_step = scale_out_step
+        self.scale_in_step = scale_in_step
+        self.min_instances = min_instances
+        self.max_instances = max_instances
+    
+    def decide(self, metrics: Dict) -> ScalingAction:
+        """
+        Pure Latency 决策算法：只看延迟，步进式扩缩容
+        
+        逻辑：
+        - TBT > SLO × 1.1 → 加 Step 个实例
+        - TBT < SLO × 0.8 → 减 Step 个实例
+        """
+        current_prompt_instances = metrics.get('current_prompt_instances', 0)
+        current_token_instances = metrics.get('current_token_instances', 1)
+        tbt = metrics.get('tbt', 0.0)  # Time Between Tokens
+        
+        if self.debug:
+            self.logger.debug(
+                f"[PureLatency] tbt={tbt:.3f}s, slo={self.tbt_slo:.3f}s, "
+                f"current: P={current_prompt_instances}, T={current_token_instances}"
+            )
+        
+        # 扩容条件：TBT > SLO × 1.1
+        if tbt > self.tbt_slo * self.scale_out_threshold and self.can_scale_out():
+            # 步进式扩容：每次加 Step 个实例
+            target_prompt = current_prompt_instances + self.scale_out_step
+            target_token = current_token_instances + self.scale_out_step
+            
+            # 应用上限
+            target_prompt = min(target_prompt, self.max_instances)
+            target_token = min(target_token, self.max_instances)
+            
+            self.record_scale_out()
+            
+            reason = (f"tbt={tbt:.3f}s > {self.tbt_slo * self.scale_out_threshold:.3f}s "
+                     f"(+{self.scale_out_step} instances)")
+            
+            return ScalingAction(
+                decision=ScalingDecision.SCALE_OUT,
+                target_prompt_instances=target_prompt,
+                target_token_instances=target_token,
+                reason=reason
+            )
+        
+        # 缩容条件：TBT < SLO × 0.8
+        elif tbt < self.tbt_slo * self.scale_in_threshold and tbt > 0 and self.can_scale_in():
+            # 步进式缩容：每次减 Step 个实例
+            target_prompt = max(0, current_prompt_instances - self.scale_in_step)
+            target_token = max(self.min_instances, current_token_instances - self.scale_in_step)
+            
+            self.record_scale_in()
+            
+            reason = (f"tbt={tbt:.3f}s < {self.tbt_slo * self.scale_in_threshold:.3f}s "
+                     f"(-{self.scale_in_step} instances)")
+            
+            return ScalingAction(
+                decision=ScalingDecision.SCALE_IN,
+                target_prompt_instances=target_prompt,
+                target_token_instances=target_token,
+                reason=reason
+            )
+        
+        # 维持不变
+        else:
+            return ScalingAction(
+                decision=ScalingDecision.NO_CHANGE,
+                target_prompt_instances=current_prompt_instances,
+                target_token_instances=current_token_instances,
                 reason="within threshold"
             )
 
 
 class LatencyBasedPolicy(AutoscalingPolicy):
     """
-    基于延迟的扩缩容策略（SLO-based）
+    基于延迟的扩缩容策略（SLO-based）- 多级阈值版本
     
     使用 TTFT 或 TBT 作为指标，采用负反馈控制（多级阈值）
     

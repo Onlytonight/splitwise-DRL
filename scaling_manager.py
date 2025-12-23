@@ -78,6 +78,7 @@ class ScalingManager:
         # 用于计算 TPS 等速率指标的累积计数器
         self._last_metrics = {
             'completed_tokens': 0,
+            'completed_requests': 0,
             'timestamp': 0.0,
         }
         
@@ -485,6 +486,21 @@ class ScalingManager:
             decode_tps_total = 0.0
         
         metrics['decode_tps'] = decode_tps_total
+        
+        # 收集 Prefill TPS（每秒完成的 Prompt 请求数）
+        # 从 router.total_arrivals 获取累积值，计算增量
+        if hasattr(self.application, 'router') and hasattr(self.application.router, 'total_arrivals'):
+            curr_arrivals = self.application.router.total_arrivals
+            delta_arrivals = curr_arrivals - self._last_metrics['completed_requests']
+            prefill_tps_total = delta_arrivals / interval
+            
+            # 更新累积状态
+            self._last_metrics['completed_requests'] = curr_arrivals
+        else:
+            # 降级方案：如果 router 不可用，设为 0
+            prefill_tps_total = 0.0
+        
+        metrics['prefill_tps'] = prefill_tps_total
         
         # 收集 GPU 利用率（基于显存使用率）
         prefill_gpu_util = 0.0
