@@ -3,6 +3,8 @@
 
 _target_: autoscaling_policies.LatencyBasedPolicy
 
+
+policy_name: LatencyTTFT
 # 目标延迟（秒）
 target_latency: 1.0
 

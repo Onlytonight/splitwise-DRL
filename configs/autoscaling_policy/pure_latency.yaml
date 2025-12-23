@@ -13,6 +13,7 @@
 
 _target_: autoscaling_policies.PureLatencyPolicy
 
+policy_name: PureLatency
 # TBT SLO（秒）
 tbt_slo: 0.04
 

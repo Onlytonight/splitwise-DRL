@@ -3,6 +3,7 @@
 
 _target_: autoscaling_policies.NoAutoscalingPolicy
 
+policy_name: NoAutoscaling
 # 固定的实例数
 fixed_prompt_instances: 1
 fixed_token_instances: 3
