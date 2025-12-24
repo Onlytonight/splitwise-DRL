@@ -16,6 +16,9 @@ defaults:
 end_time: 86400
 debug: False
 seed: 0
+trace_list:
+  - traces\rr_conv_30_50.csv
+trace_epochs: 50  # 循环使用 5 次
 
 choices: ${hydra:runtime.choices}
 output_dir: results/${seed}/${start_state.state_type}/${trace.filename}/${cluster.servers.0.count}_${cluster.servers.1.count}/${applications.0.model_architecture}/${applications.0.scheduler}

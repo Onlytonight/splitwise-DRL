@@ -151,11 +151,12 @@ class RLRewardCalculator:
         # 奖励2.0
         # Agent 会为了让 penalty_slo 保持为 0 而不敢越线
         # 在 penalty_slo 为 0 的前提下，它会尽可能减小 cost_term
-        reward = - (self.w_slo * (max_ratio ** 2) + self.w_cost * cost_score )
+        queue_len = q_prompt if self.mode == "prompt" else q_decoding
+        reward = -self.w_slo * np.log1p(queue_len) - self.w_cost * cost_score
 
         # 奖励3.0
+        #   不对，现在的排队应该是越少越好，适当的
         # 1. 悬崖：违约 (Ratio > 1.0)
-        # if max_ratio > 1.0:
         #     reward =  -self.w_slo * (max_ratio ** 2)  # 重罚
         # # 2. 甜头：黄金区间 (0.8 < Ratio <= 1.0)
         # # 这就是让 Agent 勇敢的原因！只要保持在这里，不仅不罚，还给额外的正反馈
@@ -164,6 +165,8 @@ class RLRewardCalculator:
         # # 3. 浪费：离悬崖太远 (Ratio <= 0.8) 即使没违约，但因为离得太远，没有“甜头”拿，只有省钱的微薄奖励
         # else:
         #     reward = - cost_score * ((1-max_ratio)*100)**2
+
+        # 奖励4.0
 
         # -------------------------------------------------------------
         # 4. 稳定性惩罚
@@ -175,8 +178,15 @@ class RLRewardCalculator:
             'reward':reward,
             'ratio_ttft': ratio_ttft,
             'ratio_tbt': ratio_tbt,
-            'max_ratio': max_ratio,
             'cost_score': cost_score,
+            'ttft_p50':raw_stats[7][0],
+            'ttft_p90':raw_stats[7][1],
+            'ttft_p99':raw_stats[7][2],
+            'tbt_p50':raw_stats[8][0],
+            'tbt_p90':raw_stats[8][1],
+            'tbt_p99':raw_stats[8][2],
+            'p_queue_len':raw_stats[9],
+            'q_queue_len':raw_stats[10]
         }
         return reward,info
 

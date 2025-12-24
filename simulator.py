@@ -281,16 +281,16 @@ class TraceRLSimulator(Simulator):
 
         # --- PPO Hyperparameters (从你的代码中提取并简化) ---
         self.has_continuous_action_space = True
-        self.action_std = 0.6  # 初始动作方差
+        self.action_std = 0.4  # 初始动作方差
         self.action_std_decay_rate = 0.05
         self.min_action_std = 0.1
-        self.action_std_decay_freq = int(2.5e5)
+        self.action_std_decay_freq = 1000
 
-        self.update_timestep = 2000  # 每多少个决策步更新一次网络
-        self.K_epochs = 80
+        self.update_timestep = 10  # 每多少个决策步更新一次网络
+        self.K_epochs = 40
         self.eps_clip = 0.2
         self.gamma = 0.99
-        self.lr_actor = 0.0003
+        self.lr_actor = 0.001
         self.lr_critic = 0.001
 
         # --- 初始化两个 PPO Agent ---
@@ -326,7 +326,8 @@ class TraceRLSimulator(Simulator):
         self.last_token_state = None
         self.last_prompt_action_executed = True
         self.last_token_action_executed = True
-        self.save_model_freq = 300  # 保存模型频率
+        self.save_model_freq = 1000  # 保存模型频率
+        self.finish_training = False
 
         logging.info("TraceRLSimulator initialized with dual RL agents")
         self.load_trace()
@@ -338,6 +339,94 @@ class TraceRLSimulator(Simulator):
         for request in self.trace.requests:
             self.schedule(request.arrival_timestamp,
                           lambda request=request: self.router.request_arrival(request))
+
+    def reset_for_new_trace(self, new_trace, new_cluster=None, new_applications=None, 
+                            new_router=None, new_arbiter=None):
+        """
+        重置模拟器状态以加载新的 trace，但保持 PPO agents 和训练状态。
+        如果提供了新的组件，则重新初始化所有组件（彻底清理状态）。
+        
+        Args:
+            new_trace: 新的 Trace 对象
+            new_cluster: 新初始化的 Cluster 对象（可选）
+            new_applications: 新初始化的 Applications 字典（可选）
+            new_router: 新初始化的 Router 对象（可选）
+            new_arbiter: 新初始化的 Arbiter 对象（可选）
+        """
+        # 如果提供了新的组件，则重新初始化所有组件
+        if new_cluster is not None and new_applications is not None and \
+           new_router is not None and new_arbiter is not None:
+            print('reset')
+            # 更新组件引用
+            self.cluster = new_cluster
+            self.applications = new_applications
+            self.router = new_router
+            self.arbiter = new_arbiter
+            
+            # 重新创建状态收集器（因为它们持有对 cluster/router/applications 的引用）
+            # 第一个 collector 创建时重置共享状态，第二个保持共享
+            from RL.state import RLStateCollector
+            self.prompt_collector = RLStateCollector(
+                cluster=new_cluster,
+                router=new_router,
+                applications=new_applications,
+                stack_size=4,
+                mode="prompt",
+                reset_shared_stats=True,  # 重置共享统计状态
+            )
+            self.token_collector = RLStateCollector(
+                cluster=new_cluster,
+                router=new_router,
+                applications=new_applications,
+                stack_size=4,
+                mode="token",
+                reset_shared_stats=False,  # 不重复重置（已经在 prompt_collector 中重置）
+            )
+            
+            # 重新创建 action executor（因为它持有对 application 的引用）
+            from RL.action import RLActionExecutor
+            rl_config = {
+                "w_cost": 0.7,
+                "w_slo": 0.3,
+                "w_switch": 0.1,
+                "w_util": 0.2,
+                "action_scale_step": 5,
+                "action_mig_step": 3,
+                "min_instances_per_pool": 2,
+                "max_total_instances": 100
+            }
+            self.application = list(new_applications.values())[0]
+            self.action_executor = RLActionExecutor(
+                application=self.application,
+                config=rl_config,
+            )
+            
+            logging.info("All components reinitialized (cluster, applications, router, arbiter)")
+        
+        # 重置模拟器基础状态
+        self.time = 0
+        self.events = []
+        self.deleted_events = []
+        self.completed_events = []
+        
+        # 更新 trace
+        self.trace = new_trace
+        
+        # 重新加载新 trace 的事件
+        self.load_trace()
+        
+        # 重置状态收集器的快照缓存和共享统计状态
+        from RL.state import RLStateCollector
+        RLStateCollector.clear_snapshot_cache()
+
+        # 重置上一次的状态（新 trace 开始时没有上一状态）
+        self.last_prompt_state = None
+        self.last_token_state = None
+        self.last_prompt_action_executed = True
+        self.last_token_action_executed = True
+        self.finish_training = False
+        
+        logging.info(f"Simulator reset for new trace with {len(new_trace.requests)} requests")
 
     def run(self):
         # start simulation by scheduling a cluster run
@@ -415,11 +504,12 @@ class TraceRLSimulator(Simulator):
             if self.decision_step % 10 == 0:
                 logging.info(
                     f"Step: {self.decision_step} | "
-                    f"PromptReward: {prompt_reward:.4f} (cost={prompt_info['cost_score']:.2f},queue_est_time={prompt_info['ratio_ttft']}) | "
-                    f"TokenReward: {token_reward:.4f} (cost={token_info['cost_score']:.2f},queue_est_time={token_info['ratio_tbt']})"
+                    f"PromptReward: {prompt_reward:.4f} (cost={prompt_info['cost_score']:.2f},prompt_queue={prompt_info['p_queue_len']}) | "
+                    f"TokenReward: {token_reward:.4f} (cost={token_info['cost_score']:.2f},token_queue={token_info['q_queue_len']})"
                     f""
                 )
-
+        if self.finish_training:
+            return
         # ---------------------------------------------------------
         # 3. 周期性更新两个 PPO 策略
         # ---------------------------------------------------------
@@ -478,7 +568,10 @@ class TraceRLSimulator(Simulator):
         # 6. [关键] 递归调度下一次决策
         # ---------------------------------------------------------
         # 只要还没到结束时间，就安排下一次。rps判断是否模拟结束
-        if current_time + self.decision_interval < self.end_time and rps > 0:
+        if current_time + self.decision_interval < self.end_time:
+            # 让奖励收集回去
+            if rps == 0:
+                self.finish_training = True
             self.schedule(self.decision_interval, self.run_decision_cycle)
 
     def save_results(self, detailed=True):

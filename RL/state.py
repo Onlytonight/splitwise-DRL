@@ -21,15 +21,19 @@ class RLStateCollector:
     _snapshot_cache_time = None
     _snapshot_cache_interval = None
 
-    def __init__(self, cluster, router, applications, stack_size=4, mode: str = "joint"):
+    def __init__(self, cluster, router, applications, stack_size=4, mode: str = "joint", reset_shared_stats=False):
         """
         :param cluster: 仿真器的 cluster 对象 (获取机器资源)
         :param router: 仿真器的 router 对象 (获取队列信息)
         :param applications: 应用列表 (获取 SLO 和请求统计)
         :param stack_size: 时间窗堆叠的大小 (默认 4)
         :param mode: "joint" / "prompt" / "token"
+        :param reset_shared_stats: 是否重置共享的统计状态（用于新 trace 开始时）
         """
         assert mode in ("joint", "prompt", "token")
+        
+
+        
         self.cluster = cluster
         self.router = router
         self.applications = applications
@@ -43,7 +47,17 @@ class RLStateCollector:
         )
 
         # 使用共享的 last_stats，确保 prompt 和 token collector 使用相同的基础数据
-        self.last_stats = RLStateCollector._shared_last_stats
+        # 如果指定重置共享状态，则重置类级别的共享字典
+        if reset_shared_stats:
+            self.last_stats ={
+                'arrival_count': 0,
+                'completed_tokens': 0,
+                'completed_prompts': 0,
+                'kv_transferred_bytes': 0
+            }
+        else:
+            self.last_stats = RLStateCollector._shared_last_stats
+
 
     def _collect_snapshot(self, current_time, interval):
         """
@@ -82,7 +96,7 @@ class RLStateCollector:
         snapshot.extend([avg_prompt_len, avg_output_len])
 
         # --- B. 队列特征 (Queue) [3 dim] ---
-        p_queue, d_queue, wait_time, n_p, n_t, util_mem,avg_prompt_size = self.get_instance_feature()
+        p_queue, d_queue, wait_time, n_p, n_t, util_mem,avg_prompt_size,p_queue_len,d_queue_len = self.get_instance_feature()
         snapshot.extend([p_queue, d_queue, wait_time])
 
         # --- C. 资源状态 (Resources) [5 dim] ---
@@ -110,7 +124,7 @@ class RLStateCollector:
 
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
 
-        reward_stats = [prompt_rate, token_rate, p_queue, d_queue, n_p, n_t,avg_prompt_size]
+        reward_stats = [prompt_rate, token_rate, p_queue, d_queue, n_p, n_t,avg_prompt_size,TTFT_SLO,TBT_SLO,p_queue_len,d_queue_len]
         instance_num = [n_p, n_t, util_p, util_d]
 
         result = (np.array(snapshot, dtype=np.float32), instance_num, reward_stats, rps)
@@ -350,8 +364,8 @@ class RLStateCollector:
 
         n_p = len(active_prompts)
         n_t = len(active_tokens)
-        # prompt_instance_queue_len = sum(len(i.pending_queue) for i in active_prompts)
-        # tokens_instance_queue_len = sum(len(i.pending_queue) for i in active_tokens)
+        prompt_instance_queue_len = sum(len(i.pending_queue) for i in active_prompts)
+        tokens_instance_queue_len = sum(len(i.pending_queue) for i in active_tokens)
         # print("实例堆积状态:",prompt_instance_queue_len,tokens_instance_queue_len)
         # print("sch堆积状态:",total_pending_prompt_queue_length,total_pending_tokens)
 
@@ -379,7 +393,9 @@ class RLStateCollector:
             n_p,
             n_t,
             util_mem,
-            avg_prompt_size
+            avg_prompt_size,
+            prompt_instance_queue_len,
+            tokens_instance_queue_len
         )
 
     def compute_util(self, instances, current_time, interval):
