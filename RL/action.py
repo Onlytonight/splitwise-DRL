@@ -33,7 +33,7 @@ class RLActionExecutor:
         # 使用 int() 或 round()，这里用 round 确保 0.1 也能有机会变成 1 (如果步长够大)
         # delta_p = int(round(alpha_p * self.scale_step_size))
         # delta_t = int(round(alpha_t * self.scale_step_size))
-        threshold = 0.3  # 这个阈值就是你想要的“选择维度”
+        threshold = 0  # 这个阈值就是你想要的“选择维度”
 
         if abs(alpha_p) < threshold:
             delta_p = 0

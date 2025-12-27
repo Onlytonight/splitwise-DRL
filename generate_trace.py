@@ -196,6 +196,7 @@ def generate_code_traces(
     prompt_mean = 2048, prompt_std = 1973, prompt_min = 3, prompt_max = 7437
     token_mean = 28, token_std = 60, token_min = 6, token_max = 1899
     """
+    trace_filename_template = "traces/rr_code_{}_"+str(end_time)+".csv"
     if not os.path.exists(trace_filename_template[:trace_filename_template.rfind("/")]):
         os.makedirs(trace_filename_template[:trace_filename_template.rfind("/")])
 
@@ -211,12 +212,13 @@ def generate_conv_traces(
     end_time,
     request_rates,
     conv_distributions_file,
-    trace_filename_template="traces/rr_conv_{}_5000.csv"):
+    trace_filename_template="traces/rr_conv_{}_50.csv"):
     """
     conv traces distribution
     prompt_mean = 1155, prompt_std = 1109, prompt_min = 2, prompt_max = 14050
     token_mean = 211, token_std = 163, token_min = 7, token_max = 1000
     """
+    trace_filename_template = "traces/rr_conv_{}_"+str(end_time)+".csv"
     if not os.path.exists(trace_filename_template[:trace_filename_template.rfind("/")]):
         os.makedirs(trace_filename_template[:trace_filename_template.rfind("/")])
 
@@ -261,18 +263,18 @@ if __name__ == "__main__":
 
     # download prompt and token size distributions
     # download_azure_llm_traces()
-    #
-    # # generate request traces
-    # generate_code_traces(
-    #     max_requests=1000000,
-    #     end_time=600,
-    #     request_rates=list(range(30, 251, 10)),
-    #     code_distributions_file="data/code_distributions.csv")
-    # print("Generated code traces")
+    end_time = 20
+    # generate request traces
+    generate_code_traces(
+        max_requests=1000000,
+        end_time=end_time,
+        request_rates=list(range(30, 31, 10)),
+        code_distributions_file="data/code_distributions.csv")
+    print("Generated code traces")
 
     generate_conv_traces(
         max_requests=1000000,
-        end_time=5000,
+        end_time=end_time,
         request_rates=list(range(30, 31, 10)),
         conv_distributions_file="data/conv_distributions.csv")
     print("Generated conv traces")

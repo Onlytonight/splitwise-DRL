@@ -151,8 +151,13 @@ class RLRewardCalculator:
         # 奖励2.0
         # Agent 会为了让 penalty_slo 保持为 0 而不敢越线
         # 在 penalty_slo 为 0 的前提下，它会尽可能减小 cost_term
-        queue_len = q_prompt if self.mode == "prompt" else q_decoding
-        reward = -self.w_slo * np.log1p(queue_len) - self.w_cost * cost_score
+        queue_len = raw_stats[9] if self.mode == "prompt" else raw_stats[10]
+        if self.mode == "prompt":
+            use_time = applications[0].scaling_manager.calculate_prompt_instance_time_since_last()
+        else :
+            use_time = applications[0].scaling_manager.calculate_token_instance_time_since_last()
+        reward = -self.w_slo * queue_len - self.w_cost * use_time
+        # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)
 
         # 奖励3.0
         #   不对，现在的排队应该是越少越好，适当的
@@ -186,7 +191,8 @@ class RLRewardCalculator:
             'tbt_p90':raw_stats[8][1],
             'tbt_p99':raw_stats[8][2],
             'p_queue_len':raw_stats[9],
-            'q_queue_len':raw_stats[10]
+            't_queue_len':raw_stats[10],
+            'use_time':use_time
         }
         return reward,info
 

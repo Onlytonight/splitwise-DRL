@@ -71,7 +71,11 @@ class ScalingManager:
         self.instance_status_start_time = {}  # 当前状态的开始时间 instance_id -> start_time
         self.instance_tag = {}  # 实例标签映射 instance_id -> tag ("prompt" 或 "token")
         self._last_calculation_time = None  # 上次计算总使用时间的时间戳
-        
+        self._last_calculation_token_time =None
+        self._last_calculation_prompt_time = None
+        # 记录排空完成和启动成功的时间戳
+        self.instance_drain_complete_time = {}  # instance_id -> drain_complete_time
+        self.instance_startup_complete_time = {}  # instance_id -> startup_complete_time
         # 日志
         logger_name = f"scaling/{self.application.application_id}"
         level = logging.DEBUG if self.debug else logging.INFO
@@ -243,6 +247,10 @@ class ScalingManager:
         if instance in self.scaling_up_instances:
             self.scaling_up_instances.remove(instance)
         
+        # 记录启动成功时间戳
+        current_time = clock()
+        self.instance_startup_complete_time[instance.instance_id] = current_time
+        
         self.logger.info("%s,scale_up_complete,instance_%s,%s", 
                         clock(), instance.instance_id, InstanceStatus.ACTIVE.value)
         
@@ -298,7 +306,10 @@ class ScalingManager:
             schedule_event(self.drain_check_interval,
                           lambda inst=instance: self._check_drain_status(inst))
         else:
-            # 已排空，完成缩容
+            # 已排空，记录排空完成时间戳
+            current_time = clock()
+            self.instance_drain_complete_time[instance.instance_id] = current_time
+            # 完成缩容
             self._complete_scale_down(instance)
     
     def _complete_scale_down(self, instance):
@@ -489,65 +500,97 @@ class ScalingManager:
         
         total_time = 0.0
         
-        # 遍历所有实例（包括历史记录中的和当前存在的）
+        # 遍历所有实例（包括历史记录中的、当前状态中的，以及 application.instances 中的所有实例）
+        # 这样可以确保包括启动时通过 pre_start=True 创建的、未通过 ScalingManager 记录的实例
         all_instance_ids = set(self.instance_status_history.keys())
         all_instance_ids.update(self.instance_status.keys())
+        # 添加所有当前存在的实例ID
+        for inst in self.application.instances:
+            all_instance_ids.add(inst.instance_id)
         
         for instance_id in all_instance_ids:
             # 如果指定了 tag，则过滤实例
-            if tag is not None:
-                instance_tag = self.instance_tag.get(instance_id)
-                # 如果实例没有 tag 记录，尝试从 application.instances 中查找
-                if instance_tag is None:
-                    for inst in self.application.instances:
-                        if inst.instance_id == instance_id:
-                            instance_tag = getattr(inst, 'tag', None)
-                            if instance_tag:
-                                self.instance_tag[instance_id] = instance_tag
-                            break
-                
-                if instance_tag != tag:
-                    continue
+            instance_tag = self.instance_tag.get(instance_id)
+            # 如果实例没有 tag 记录，尝试从 application.instances 中查找
+            if instance_tag is None:
+                for inst in self.application.instances:
+                    if inst.instance_id == instance_id:
+                        instance_tag = getattr(inst, 'tag', None)
+                        if instance_tag:
+                            self.instance_tag[instance_id] = instance_tag
+                        break
+            
+            if tag is not None and instance_tag != tag:
+                continue
             
             instance_total_time = 0.0
             
-            # 1. 计算历史记录中在时间间隔内的部分
-            if instance_id in self.instance_status_history:
-                for record in self.instance_status_history[instance_id]:
-                    # 计算记录与时间间隔的重叠部分
-                    record_start = max(record['start_time'], start_time)
-                    record_end = min(record['end_time'], end_time)
-                    
-                    if record_start < record_end:
-                        # 只计算 ACTIVE、SCALING_UP、DRAINING 状态的时间
-                        if record['status'] in [InstanceStatus.ACTIVE, 
-                                                InstanceStatus.SCALING_UP, 
-                                                InstanceStatus.DRAINING]:
-                            instance_total_time += (record_end - record_start)
+            # 检查实例是否在 ScalingManager 的状态记录系统中
+            has_status_record = (instance_id in self.instance_status or 
+                                instance_id in self.instance_status_history)
             
-            # 2. 计算当前状态在时间间隔内的部分
-            if instance_id in self.instance_status_start_time:
-                status = self.instance_status.get(instance_id)
-                if status is not None:
-                    status_start = self.instance_status_start_time[instance_id]
-                    
-                    # 计算当前状态与时间间隔的重叠部分
-                    overlap_start = max(status_start, start_time)
-                    overlap_end = min(current_time, end_time)
-                    
-                    if overlap_start < overlap_end:
-                        # 只计算 ACTIVE、SCALING_UP、DRAINING 状态的时间
-                        if status in [InstanceStatus.ACTIVE, 
-                                     InstanceStatus.SCALING_UP, 
-                                     InstanceStatus.DRAINING]:
-                            instance_total_time += (overlap_end - overlap_start)
+            if has_status_record:
+                # 实例在 ScalingManager 中有状态记录，使用原有的计算逻辑
+                # 1. 计算历史记录中在时间间隔内的部分
+                if instance_id in self.instance_status_history:
+                    for record in self.instance_status_history[instance_id]:
+                        # 计算记录与时间间隔的重叠部分
+                        record_start = max(record['start_time'], start_time)
+                        record_end = min(record['end_time'], end_time)
+                        
+                        if record_start < record_end:
+                            # 只计算 ACTIVE、SCALING_UP、DRAINING 状态的时间
+                            if record['status'] in [InstanceStatus.ACTIVE, 
+                                                    InstanceStatus.SCALING_UP, 
+                                                    InstanceStatus.DRAINING]:
+                                instance_total_time += (record_end - record_start)
+                
+                # 2. 计算当前状态在时间间隔内的部分
+                if instance_id in self.instance_status_start_time:
+                    status = self.instance_status.get(instance_id)
+                    if status is not None:
+                        status_start = self.instance_status_start_time[instance_id]
+                        
+                        # 计算当前状态与时间间隔的重叠部分
+                        overlap_start = max(status_start, start_time)
+                        overlap_end = min(current_time, end_time)
+                        
+                        if overlap_start < overlap_end:
+                            # 只计算 ACTIVE、SCALING_UP、DRAINING 状态的时间
+                            if status in [InstanceStatus.ACTIVE, 
+                                         InstanceStatus.SCALING_UP, 
+                                         InstanceStatus.DRAINING]:
+                                instance_total_time += (overlap_end - overlap_start)
+            else:
+                # 实例不在 ScalingManager 的状态记录系统中（通常是启动时通过 pre_start=True 创建的）
+                # 将其视为从创建时开始就处于 ACTIVE 状态
+                for inst in self.application.instances:
+                    if inst.instance_id == instance_id:
+                        # 使用实例的 spin_up_timestamp 作为开始时间
+                        if hasattr(inst, 'metrics') and hasattr(inst.metrics, 'spin_up_timestamp'):
+                            instance_start_time = inst.metrics.spin_up_timestamp
+                            if instance_start_time is not None and instance_start_time >= 0:
+                                # 计算实例运行时间与时间间隔的重叠部分
+                                overlap_start = max(instance_start_time, start_time)
+                                overlap_end = min(current_time, end_time)
+                                
+                                if overlap_start < overlap_end:
+                                    # 视为 ACTIVE 状态的时间
+                                    instance_total_time += (overlap_end - overlap_start)
+                        break
             
             total_time += instance_total_time
         
         # 更新上次计算时间（仅当没有指定 tag 时，避免影响其他计算）
-        if tag is None:
+        # 一个周期内连续调用两次
+        if tag =="token":
+            self._last_calculation_token_time = end_time
+        elif tag=="prompt":
+            self._last_calculation_prompt_time = end_time
+        else:
             self._last_calculation_time = end_time
-        
+
+
         return total_time
     
     def calculate_total_instance_time_since_last(self):
@@ -562,7 +605,7 @@ class ScalingManager:
         
         if self._last_calculation_time is None:
             # 第一次调用，计算从 0 到当前时间
-            return self.calculate_total_instance_time(start_time=0.0, end_time=current_time)
+            return self.calculate_total_instance_time(start_time=2.0, end_time=current_time)
         else:
             # 计算从上一次调用到当前时间
             return self.calculate_total_instance_time(
@@ -617,11 +660,11 @@ class ScalingManager:
         """
         current_time = clock()
         
-        if self._last_calculation_time is None:
-            return self.calculate_prompt_instance_time(start_time=0.0, end_time=current_time)
+        if self._last_calculation_prompt_time is None:
+            return self.calculate_prompt_instance_time(start_time=2.0, end_time=current_time)
         else:
             return self.calculate_prompt_instance_time(
-                start_time=self._last_calculation_time, 
+                start_time=self._last_calculation_prompt_time,
                 end_time=current_time
             )
     
@@ -634,11 +677,11 @@ class ScalingManager:
         """
         current_time = clock()
         
-        if self._last_calculation_time is None:
-            return self.calculate_token_instance_time(start_time=0.0, end_time=current_time)
+        if self._last_calculation_token_time is None:
+            return self.calculate_token_instance_time(start_time=2.0, end_time=current_time)
         else:
             return self.calculate_token_instance_time(
-                start_time=self._last_calculation_time, 
+                start_time=self._last_calculation_token_time,
                 end_time=current_time
             )
 

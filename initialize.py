@@ -94,7 +94,7 @@ def init_applications(cfg, cluster, router, arbiter):
             scaling_manager = ScalingManager(
                 application=application,
                 cluster=cluster,
-                scale_up_delay=getattr(application_cfg.scaling_manager, 'scale_up_delay', 10.0),
+                scale_up_delay=getattr(application_cfg.scaling_manager, 'scale_up_delay', 1.0),
                 drain_check_interval=getattr(application_cfg.scaling_manager, 'drain_check_interval', 1.0),
                 debug=getattr(application_cfg, 'debug', False)
             )

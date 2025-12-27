@@ -230,17 +230,19 @@ class TraceRLSimulator(Simulator):
         self.router = router
         self.arbiter = arbiter
         self.decision_interval = 2  # 保存间隔
+        self.enabled_features = ["instance_count", "scaling"]
 
-        rl_config = {
+        self.rl_config = {
             "w_cost": 0.7,
             "w_slo": 0.3,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
             "action_mig_step": 3,
-            "min_instances_per_pool": 2,
+            "min_instances_per_pool": 1,
             "max_total_instances": 100
         }
+        rl_config = self.rl_config
 
         # 用于保存上一次决策时的统计快照，用于计算区间内的速率（Rate）
         # prompt / token 两个 RL 代理分别使用各自的状态收集器
@@ -250,6 +252,7 @@ class TraceRLSimulator(Simulator):
             applications=applications,
             stack_size=4,
             mode="prompt",
+            enabled_features=self.enabled_features
         )
         self.token_collector = RLStateCollector(
             cluster=cluster,
@@ -257,6 +260,7 @@ class TraceRLSimulator(Simulator):
             applications=applications,
             stack_size=4,
             mode="token",
+            enabled_features=self.enabled_features
         )
 
         # 初始化两个奖励计算器
@@ -356,7 +360,7 @@ class TraceRLSimulator(Simulator):
         # 如果提供了新的组件，则重新初始化所有组件
         if new_cluster is not None and new_applications is not None and \
            new_router is not None and new_arbiter is not None:
-            print('reset')
+            # print('reset')
             # 更新组件引用
             self.cluster = new_cluster
             self.applications = new_applications
@@ -373,6 +377,7 @@ class TraceRLSimulator(Simulator):
                 stack_size=4,
                 mode="prompt",
                 reset_shared_stats=True,  # 重置共享统计状态
+                enabled_features=self.enabled_features
             )
             self.token_collector = RLStateCollector(
                 cluster=new_cluster,
@@ -381,27 +386,18 @@ class TraceRLSimulator(Simulator):
                 stack_size=4,
                 mode="token",
                 reset_shared_stats=False,  # 不重复重置（已经在 prompt_collector 中重置）
+                enabled_features=self.enabled_features
             )
             
             # 重新创建 action executor（因为它持有对 application 的引用）
             from RL.action import RLActionExecutor
-            rl_config = {
-                "w_cost": 0.7,
-                "w_slo": 0.3,
-                "w_switch": 0.1,
-                "w_util": 0.2,
-                "action_scale_step": 5,
-                "action_mig_step": 3,
-                "min_instances_per_pool": 2,
-                "max_total_instances": 100
-            }
             self.application = list(new_applications.values())[0]
             self.action_executor = RLActionExecutor(
                 application=self.application,
-                config=rl_config,
+                config=self.rl_config,
             )
             
-            logging.info("All components reinitialized (cluster, applications, router, arbiter)")
+            # logging.info("All components reinitialized (cluster, applications, router, arbiter)")
         
         # 重置模拟器基础状态
         self.time = 0
@@ -426,7 +422,7 @@ class TraceRLSimulator(Simulator):
         self.last_token_action_executed = True
         self.finish_training = False
         
-        logging.info(f"Simulator reset for new trace with {len(new_trace.requests)} requests")
+        # logging.info(f"Simulator reset for new trace with {len(new_trace.requests)} requests")
 
     def run(self):
         # start simulation by scheduling a cluster run
@@ -504,8 +500,8 @@ class TraceRLSimulator(Simulator):
             if self.decision_step % 10 == 0:
                 logging.info(
                     f"Step: {self.decision_step} | "
-                    f"PromptReward: {prompt_reward:.4f} (cost={prompt_info['cost_score']:.2f},prompt_queue={prompt_info['p_queue_len']}) | "
-                    f"TokenReward: {token_reward:.4f} (cost={token_info['cost_score']:.2f},token_queue={token_info['q_queue_len']})"
+                    f"PromptReward: {prompt_reward:.4f} (machine={prompt_info['cost_score']:.2f},{prompt_info['use_time']},queue={prompt_info['p_queue_len']},ttft_p99={prompt_info['ttft_p99']}) | "
+                    f"TokenReward: {token_reward:.4f} (machine={token_info['cost_score']:.2f},{token_info['use_time']},queue={token_info['t_queue_len']},tbt_p99={token_info['tbt_p99']})"
                     f""
                 )
         if self.finish_training:
@@ -514,7 +510,7 @@ class TraceRLSimulator(Simulator):
         # 3. 周期性更新两个 PPO 策略
         # ---------------------------------------------------------
         if self.decision_step % self.update_timestep == 0 and self.decision_step > 0:
-            logging.info(f"Updating PPO Policies at step {self.decision_step}...")
+            # logging.info(f"Updating PPO Policies at step {self.decision_step}...")
             self.prompt_agent.update()
             self.token_agent.update()
 

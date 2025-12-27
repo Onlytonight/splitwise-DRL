@@ -32,7 +32,7 @@ def init_trace_from_path(trace_path):
     import os
     
     full_path = os.path.join(get_original_cwd(), trace_path)
-    print(f"Loading trace from: {full_path}")
+    # print(f"Loading trace from: {full_path}")
     trace = Trace.from_csv(full_path)
     return trace
 
