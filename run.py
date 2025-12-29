@@ -54,6 +54,8 @@ def run_simulation(cfg):
     
     # 获取 trace_epochs 配置（如果设置了，就循环使用同一个 trace）
     trace_epochs = getattr(cfg, 'trace_epochs', 1)
+    # 获取 trace_list_repeats 配置（trace_list 的循环次数）
+    trace_list_repeats = getattr(cfg, 'trace_list_repeats', 1)
     
     # 检查是否有 trace_list 配置，如果有则循环训练多个 trace
     if hasattr(cfg, 'trace_list') and cfg.trace_list is not None and len(cfg.trace_list) > 0:
@@ -61,8 +63,13 @@ def run_simulation(cfg):
         # 将 ListConfig 转换为普通列表
         trace_paths = list(cfg.trace_list)
         
+        # 如果设置了 trace_list_repeats > 1，将整个 trace_list 重复指定次数
+        if trace_list_repeats > 1:
+            original_trace_paths = trace_paths.copy()
+            trace_paths = original_trace_paths * trace_list_repeats
+            logging.info(f"Repeating trace_list {trace_list_repeats} times: {len(original_trace_paths)} traces × {trace_list_repeats} = {len(trace_paths)} total traces")
         # 如果只有一个 trace 且设置了 trace_epochs > 1，则循环使用它
-        if len(trace_paths) == 1 and trace_epochs > 1:
+        elif len(trace_paths) == 1 and trace_epochs > 1:
             trace_paths = trace_paths * trace_epochs
             logging.info(f"Using single trace with {trace_epochs} epochs: {trace_paths[0]}")
         else:

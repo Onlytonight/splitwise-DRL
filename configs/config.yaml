@@ -17,10 +17,10 @@ end_time: 86400
 debug: False
 seed: 0
 trace_list:
-#  - traces\constant_prompt_1_token_27_20.csv
-#  - traces\constant_prompt_1000_token_1_30.csv
-  - traces\rr_code_30_20.csv
-trace_epochs: 1000  # 循环使用 5 次
+  - traces/burst/day_13.csv
+
+trace_epochs: 1  # 单个 trace 的循环次数（当使用 trace_list 时，此参数用于控制整个列表的循环次数）
+trace_list_repeats: 100  # trace_list 的循环次数
 
 choices: ${hydra:runtime.choices}
 output_dir: results/${seed}/${start_state.state_type}/${trace.filename}/${cluster.servers.0.count}_${cluster.servers.1.count}/${applications.0.model_architecture}/${applications.0.scheduler}

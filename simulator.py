@@ -216,6 +216,9 @@ def reschedule_event(*args):
 
 
 class TraceRLSimulator(Simulator):
+    # 类级别的标志，用于跟踪是否是第一次保存（整个程序运行期间）
+    _first_save = True
+    
     def __init__(self,
                  trace,
                  cluster,
@@ -230,11 +233,10 @@ class TraceRLSimulator(Simulator):
         self.router = router
         self.arbiter = arbiter
         self.decision_interval = 2  # 保存间隔
-        self.enabled_features = ["instance_count", "scaling"]
-
+        self.enabled_features =["rate", "length", "queue", "instance_count", "utilization", "scaling"]
         self.rl_config = {
             "w_cost": 0.7,
-            "w_slo": 0.3,
+            "w_slo": 10,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
@@ -497,11 +499,11 @@ class TraceRLSimulator(Simulator):
             self.prompt_reward_recorder.record_reward(self.decision_step, prompt_info)
             self.token_reward_recorder.record_reward(self.decision_step, token_info)
 
-            if self.decision_step % 10 == 0:
+            if self.decision_step % 1 == 0:
                 logging.info(
                     f"Step: {self.decision_step} | "
-                    f"PromptReward: {prompt_reward:.4f} (machine={prompt_info['cost_score']:.2f},{prompt_info['use_time']},queue={prompt_info['p_queue_len']},ttft_p99={prompt_info['ttft_p99']}) | "
-                    f"TokenReward: {token_reward:.4f} (machine={token_info['cost_score']:.2f},{token_info['use_time']},queue={token_info['t_queue_len']},tbt_p99={token_info['tbt_p99']})"
+                    f"PromptReward: {prompt_reward:.2f} (machine={prompt_info['cost_score']:.2f},{prompt_info['use_time']},sch_queue={prompt_info['p_queue_len']},ttft_p99={prompt_info['ttft_p99']:.2f},instance_queue={prompt_info['instance_p_queue_len']}) | "
+                    f"TokenReward: {token_reward:.2f} (machine={token_info['cost_score']:.2f},{token_info['use_time']},sch_queue={token_info['t_queue_len']},tbt_p99={token_info['tbt_p99']:.2f},instance_queue={token_info['instance_t_queue_len']})"
                     f""
                 )
         if self.finish_training:
@@ -573,6 +575,7 @@ class TraceRLSimulator(Simulator):
     def save_results(self, detailed=True):
         """
         Save results at the end of the simulation.
+        第一次运行时清空文件，后续循环 trace 时追加。
         """
         self.router.save_results()
 
@@ -593,12 +596,17 @@ class TraceRLSimulator(Simulator):
                 for metric, value in summary.items():
                     summary_results[f"{key}_{metric}"].append(value)
 
+        # 判断是否是第一次保存：第一次清空文件，后续追加
+        is_first_save = TraceRLSimulator._first_save
+        if is_first_save:
+            TraceRLSimulator._first_save = False
+
         # save summary results
-        utils.save_dict_as_csv(summary_results, "summary.csv")
+        utils.save_dict_as_csv(summary_results, "summary.csv", append=not is_first_save)
 
         if detailed:
             # create a dataframe of all requests, save as csv
             for application_id, result in sched_results.items():
-                utils.save_dict_as_csv(result, f"detailed/{application_id}.csv")
+                utils.save_dict_as_csv(result, f"detailed/{application_id}.csv", append=not is_first_save)
             for application_id, result in alloc_results.items():
-                utils.save_dict_as_csv(result, f"detailed/{application_id}_alloc.csv")
+                utils.save_dict_as_csv(result, f"detailed/{application_id}_alloc.csv", append=not is_first_save)

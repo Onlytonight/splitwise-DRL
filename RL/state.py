@@ -76,9 +76,9 @@ class RLStateCollector:
             # 如果指定了 enabled_features，则只启用指定的特征对
             if enabled_features is not None:
                 enabled_set = set(enabled_features)
-                # 先禁用所有共享特征
-                for key in cls._SHARED_FEATURES:
-                    config[key] = False
+                # 共享特征默认开启
+                # for key in cls._SHARED_FEATURES:
+                #     config[key] = False
                 # 再禁用所有特征对
                 for pair_name in cls._FEATURE_PAIRS:
                     prompt_feat, token_feat, _ = cls._FEATURE_PAIRS[pair_name]
@@ -224,12 +224,13 @@ class RLStateCollector:
             snapshot.append(avg_output_len)
 
         # --- B. 队列特征 (Queue) ---
-        p_queue, d_queue, wait_time, n_p, n_t, util_mem, avg_prompt_size, p_queue_len, d_queue_len = self.get_instance_feature()
+        sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size = self.get_scheduler_feature()
+        n_p, n_t, util_mem, ins_p_queue, ins_d_queue = self.get_instance_feature()
         
         if cfg["needs_p_queue"]:
-            snapshot.append(p_queue)
+            snapshot.append(sch_p_queue_tokens)
         if cfg["needs_d_queue"]:
-            snapshot.append(d_queue)
+            snapshot.append(sch_d_queue_tokens)
         if cfg["needs_wait_time"]:
             snapshot.append(wait_time)
 
@@ -283,7 +284,7 @@ class RLStateCollector:
         })
 
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
-        reward_stats = [prompt_rate, token_rate, p_queue, d_queue, n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, p_queue_len, d_queue_len]
+        reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, ins_p_queue, ins_d_queue]
         instance_num = [n_p, n_t, util_p, util_d]
 
         result = (np.array(snapshot, dtype=np.float32), instance_num, reward_stats, rps)
@@ -402,12 +403,41 @@ class RLStateCollector:
         cls._snapshot_cache_time = None
         cls._snapshot_cache_interval = None
 
-    def get_instance_feature(self):
-        # 获取第一个应用的调度器
+    def get_scheduler_feature(self):
+        """
+        获取调度器（scheduler）相关的特征
+        
+        Returns:
+            tuple: (sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size)
+                - sch_p_queue_tokens: 调度器中待处理的 prompt 队列长度（token 数）
+                - sch_d_queue_tokens: 调度器中待处理的 token 队列长度（token 数）
+                - wait_time: 平均等待时间
+                - avg_prompt_size: 平均 prompt 大小
+        """
         scheduler = self.scheduler
+        total_pending_prompt_queue_length, total_pending_tokens, avg_time, avg_prompt_size = scheduler.get_queue_stats()
+        # print("sch堆积状态:",total_pending_prompt_queue_length,total_pending_tokens)
 
-        # 从 scheduler 获取队列统计
-        total_pending_prompt_queue_length, total_pending_tokens, avg_time,avg_prompt_size = scheduler.get_queue_stats()
+        return (
+            total_pending_prompt_queue_length,
+            total_pending_tokens,
+            avg_time,
+            avg_prompt_size
+        )
+
+    def get_instance_feature(self):
+        """
+        获取实例（instance）相关的特征
+        
+        Returns:
+            tuple: (n_p, n_t, util_mem, ins_p_queue, ins_d_queue)
+                - n_p: 活跃的 prompt 实例数量
+                - n_t: 活跃的 token 实例数量
+                - util_mem: 平均内存利用率（根据 mode 计算不同的实例集合）
+                - ins_p_queue: prompt 实例队列总长度
+                - ins_d_queue: token 实例队列总长度
+        """
+        scheduler = self.scheduler
 
         # 获取各类型实例数量（包括活跃的）
         if hasattr(self.applications[0], 'scaling_manager') and \
@@ -425,7 +455,6 @@ class RLStateCollector:
         prompt_instance_queue_len = sum(len(i.pending_queue) for i in active_prompts)
         tokens_instance_queue_len = sum(len(i.pending_queue) for i in active_tokens)
         # print("实例堆积状态:",prompt_instance_queue_len,tokens_instance_queue_len)
-        # print("sch堆积状态:",total_pending_prompt_queue_length,total_pending_tokens)
 
         # -------- util_mem：根据当前 collector 的 mode，分别按 prompt/token 计算 --------
         if self.mode == "prompt":
@@ -445,13 +474,9 @@ class RLStateCollector:
             util_mem = 0.0
 
         return (
-            total_pending_prompt_queue_length,
-            total_pending_tokens,
-            avg_time,
             n_p,
             n_t,
             util_mem,
-            avg_prompt_size,
             prompt_instance_queue_len,
             tokens_instance_queue_len
         )

@@ -101,9 +101,22 @@ def get_statistics(values, statistics=None):
     return results
 
 
-def save_dict_as_csv(d, filename):
+def save_dict_as_csv(d, filename, append=False):
+    """
+    Save dictionary as CSV file.
+    
+    :param d: Dictionary to save
+    :param filename: Output filename
+    :param append: If True, append to existing file (if exists). If False, overwrite.
+    """
     dirname = os.path.dirname(filename)
     if dirname != "":
         os.makedirs(dirname, exist_ok=True)
     df = pd.DataFrame(d)
-    df.to_csv(filename, index=False)
+    
+    if append and os.path.exists(filename):
+        # 追加模式：直接追加到文件末尾，不写表头
+        df.to_csv(filename, mode='a', header=False, index=False)
+    else:
+        # 覆盖模式：写入新文件，包含表头
+        df.to_csv(filename, mode='w', header=True, index=False)
