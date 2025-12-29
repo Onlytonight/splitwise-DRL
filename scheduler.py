@@ -110,6 +110,8 @@ class Scheduler(ABC):
         self.pending_queue.append(request)
         if len(self.pending_queue) == 1:
             self.run_request(request)
+        else:
+            self.run_request(self.pending_queue[0])
 
     def request_completion(self, request):
         """
