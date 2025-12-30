@@ -57,6 +57,21 @@ class Scheduler(ABC):
         perf_model_path = os.path.join(os.path.dirname(__file__), "data", "perf_model.csv")
         self.perf_model = PerfModel(perf_model_path, init=True)
 
+    def reset(self):
+        """
+        重置 scheduler 的状态，用于新的 trace 开始。
+        清空队列和重置计数器，但保留实例列表和配置。
+        """
+        # 清空请求队列
+        self.pending_queue.clear()
+        self.executing_queue.clear()
+        self.completed_queue.clear()
+        
+        # 重置计数器
+        self.last_completed_count = 0
+        
+        # 清空执行器
+        self.executors.clear()
 
     @property
     def application(self):
@@ -230,6 +245,8 @@ class Scheduler(ABC):
             request_data = []
             ttfts = []
             tbts = []
+            queue_times = []
+            nth_token_overheads = []
 
             for req in newly_completed_requests:
                 # 获取TTFT
@@ -241,6 +258,13 @@ class Scheduler(ABC):
                 token_size = getattr(req, 'token_size', 1)  # 提供默认值以防属性不存在
                 tbt = (req.metrics.router_response_time - ttft) / token_size if token_size > 0 else 0
                 tbts.append(tbt)
+
+                # 收集 queue_time 和 nth_token_overhead
+                queue_time = req.metrics.queue_time
+                queue_times.append(queue_time)
+                
+                nth_token_overhead = req.get_nth_token_overhead()
+                nth_token_overheads.append(nth_token_overhead)
 
                 # 收集数据用于归一化
                 request_data.append({
@@ -276,15 +300,19 @@ class Scheduler(ABC):
                 # print(f"Normalized TTFT - P50: {p50_normalized_ttft:.2f}, P99: {p99_normalized_ttft:.2f}")
                 # print(f"Normalized TBT - P50: {p50_normalized_tbt:.2f}, P99: {p99_normalized_tbt:.2f}")
 
-                # 返回归一化后的p50和p99分位数以及超出阈值的比例
+                # 计算平均 queue_time 和平均 nth_token_overhead
+                avg_queue_time = np.mean(queue_times) if queue_times else 0.0
+                avg_nth_token_overhead = np.mean(nth_token_overheads) if nth_token_overheads else 0.0
+
+                # 返回归一化后的p50和p99分位数以及超出阈值的比例，以及平均 queue_time 和平均 nth_token_overhead
                 self.last_completed_count = new_completed_count
                 return [p50_normalized_ttft,p90_normalized_ttft, p99_normalized_ttft], [p50_normalized_tbt,
-                        p90_normalized_tbt,p99_normalized_tbt],[ttft_over_6_ratio,tbt_over_5_ratio]
+                        p90_normalized_tbt,p99_normalized_tbt],[ttft_over_6_ratio,tbt_over_5_ratio], avg_queue_time, avg_nth_token_overhead
 
             self.last_completed_count = new_completed_count
 
         # 如果没有新完成的请求，返回0
-        return [0,0,0], [0,0,0], [0,0]
+        return [0,0,0], [0,0,0], [0,0], 0.0, 0.0
 
 
 
@@ -724,6 +752,9 @@ class MixedPoolScheduler(KVScheduler):
         self.prompt_instances = []
         self.mixed_instances = []
         self.token_instances = []
+        # 统计prompt和token实例为None的次数
+        self.prompt_none_count = 0
+        self.token_none_count = 0
 
     def is_memory_loaded(self, instance, tasks):
         """
@@ -813,6 +844,11 @@ class MixedPoolScheduler(KVScheduler):
                 break
 
         if prompt_instance is None or token_instance is None:
+            # 统计是prompt还是token为None
+            if prompt_instance is None:
+                self.prompt_none_count += 1
+            if token_instance is None:
+                self.token_none_count += 1
             if self.debug:
                 print(f"[Backpressure] Req {request.request_id} stalled. All instances overloaded.")
             return False
@@ -970,6 +1006,24 @@ class MixedPoolScheduler(KVScheduler):
             total_time = 0
         avg_prompt_size = total_pending_prompt_queue_length/len(self.pending_queue) if len(self.pending_queue) > 0 else 0
         return total_pending_prompt_queue_length, total_pending_tokens, total_time,avg_prompt_size
+
+    def get_period_result(self):
+        """
+        重写父类方法，添加prompt_none_count和token_none_count的返回和清零
+        """
+        # 调用父类方法获取原有返回值
+        result = super().get_period_result()
+        
+        # 获取当前计数器的值
+        prompt_none_count = self.prompt_none_count
+        token_none_count = self.token_none_count
+        
+        # 清零计数器
+        self.prompt_none_count = 0
+        self.token_none_count = 0
+        
+        # 返回原有结果加上两个计数器
+        return result + (prompt_none_count, token_none_count)
 
 
 
@@ -1341,7 +1395,9 @@ class AdaptiveMixedPoolScheduler(KVScheduler):
         """
         # 设置调整阈值，可根据实际情况调整
         adjust_threshold = 5  # 当一个指标是另一个的1.5倍以上时进行调整
-        p50_normalized_ttft, p50_normalized_tbt = self.get_period_result()
+        ttft_result, tbt_result, _, _, _ = self.get_period_result()
+        p50_normalized_ttft = ttft_result[0]
+        p50_normalized_tbt = tbt_result[0]
         p50_normalized_ttft = p50_normalized_ttft[0]
         p50_normalized_tbt = p50_normalized_tbt[0]
 

@@ -27,6 +27,16 @@ class RLStateCollector:
         "needs_rps": True,
         "needs_wait_time": True,
         "needs_util_mem": True,
+        "needs_last_action": True,  # 上一次动作特征
+    }
+    
+    # 共享特征的名称映射，用于通过 enabled_features 控制
+    _SHARED_FEATURE_NAMES = {
+        "rps": "needs_rps",
+        "wait_time": "needs_wait_time",
+        "util_mem": "needs_util_mem",
+        "action": "needs_last_action",  # 或 "last_action"
+        "last_action": "needs_last_action",  # 支持两种名称
     }
 
     _FEATURE_PAIRS = {
@@ -37,6 +47,7 @@ class RLStateCollector:
         "utilization": ("needs_util_p", "needs_util_d", True),
         "slo": ("needs_ttft", "needs_tbt", True),
         "scaling": ("needs_scaling_prompt", "needs_scaling_token", True),
+        "none_count": ("needs_prompt_none_count", "needs_token_none_count", True),
     }
     
     # Joint 模式的完整配置（所有特征都启用）
@@ -58,6 +69,9 @@ class RLStateCollector:
         "needs_tbt": True,
         "needs_scaling_prompt": True,
         "needs_scaling_token": True,
+        "needs_last_action": True,
+        "needs_prompt_none_count": True,
+        "needs_token_none_count": True,
     }
     
     @classmethod
@@ -67,26 +81,31 @@ class RLStateCollector:
         对于 prompt/token 模式，使用特征对机制，确保对应特征同步。
         
         :param mode: "joint" / "prompt" / "token"
-        :param enabled_features: 可选，要启用的特征对名称列表（如 ["instance_count", "scaling"]）
-                                 如果为 None，则使用默认配置（所有特征对都启用）
+        :param enabled_features: 可选，要启用的特征名称列表
+                                 可以包含特征对名称（如 "instance_count", "scaling"）
+                                 也可以包含共享特征名称（如 "rps", "wait_time", "util_mem"）
+                                 如果为 None，则使用默认配置（所有特征都启用）
         :return: 特征配置字典
         """
         if mode == "joint":
             config = cls._JOINT_CONFIG.copy()
-            # 如果指定了 enabled_features，则只启用指定的特征对
+            # 如果指定了 enabled_features，则只启用指定的特征
             if enabled_features is not None:
                 enabled_set = set(enabled_features)
-                # 共享特征默认开启
-                # for key in cls._SHARED_FEATURES:
-                #     config[key] = False
-                # 再禁用所有特征对
+                # 禁用所有共享特征
+                for key in cls._SHARED_FEATURES:
+                    config[key] = False
+                # 禁用所有特征对
                 for pair_name in cls._FEATURE_PAIRS:
                     prompt_feat, token_feat, _ = cls._FEATURE_PAIRS[pair_name]
                     config[prompt_feat] = False
                     config[token_feat] = False
-                # 启用指定的共享特征（如果 enabled_features 中包含）
-                # 注意：共享特征不在 _FEATURE_PAIRS 中，需要单独处理
-                # 这里我们假设用户只关心特征对，共享特征默认关闭
+                
+                # 启用指定的共享特征
+                for shared_name, feature_key in cls._SHARED_FEATURE_NAMES.items():
+                    if shared_name in enabled_set:
+                        config[feature_key] = True
+                
                 # 启用指定的特征对
                 for pair_name in enabled_set:
                     if pair_name in cls._FEATURE_PAIRS:
@@ -96,14 +115,17 @@ class RLStateCollector:
             return config
         
         # 从共享特征开始
-        config = cls._SHARED_FEATURES.copy()
+        config = {}
         
-        # 如果指定了 enabled_features，则禁用所有共享特征，只启用指定的特征对
+        # 如果指定了 enabled_features，则根据列表启用共享特征
         if enabled_features is not None:
             enabled_set = set(enabled_features)
-            # 禁用所有共享特征
-            for key in config:
-                config[key] = False
+            # 只启用 enabled_features 中指定的共享特征
+            for shared_name, feature_key in cls._SHARED_FEATURE_NAMES.items():
+                config[feature_key] = shared_name in enabled_set
+        else:
+            # 默认启用所有共享特征
+            config = cls._SHARED_FEATURES.copy()
         
         # 添加特征对
         for pair_name, (prompt_feat, token_feat, default_enabled) in cls._FEATURE_PAIRS.items():
@@ -129,7 +151,9 @@ class RLStateCollector:
         使用此方法而不是直接访问 _FEATURE_CONFIG，确保特征对同步。
         
         :param mode: "joint" / "prompt" / "token"
-        :param enabled_features: 可选，要启用的特征对名称列表（如 ["instance_count", "scaling"]）
+        :param enabled_features: 可选，要启用的特征名称列表
+                                 可以包含特征对名称（如 "instance_count", "scaling"）
+                                 也可以包含共享特征名称（如 "rps", "wait_time", "util_mem"）
         :return: 特征配置字典
         """
         return cls._build_feature_config(mode, enabled_features)
@@ -142,9 +166,11 @@ class RLStateCollector:
         :param stack_size: 时间窗堆叠的大小 (默认 4)
         :param mode: "joint" / "prompt" / "token"
         :param reset_shared_stats: 是否重置共享的统计状态（用于新 trace 开始时）
-        :param enabled_features: 可选，要启用的特征对名称列表（如 ["instance_count", "scaling"]）
-                                 如果为 None，则使用默认配置（所有特征对都启用）
-                                 可用的特征对名称：rate, length, queue, instance_count, utilization, slo, scaling
+        :param enabled_features: 可选，要启用的特征名称列表
+                                 如果为 None，则使用默认配置（所有特征都启用）
+                                 可用的特征对名称：rate, length, queue, instance_count, utilization, slo, scaling, none_count
+                                 可用的共享特征名称：rps, wait_time, util_mem, action (或 last_action)
+                                 注意：none_count 特征对包含 prompt_none_count 和 token_none_count
         """
         assert mode in ("joint", "prompt", "token")
         
@@ -251,7 +277,8 @@ class RLStateCollector:
 
         # --- D. 性能反馈 (SLO) ---
         # 无论特征配置如何，都需要获取真实的SLO数据用于奖励计算
-        ttft, tbt, vio_slo_rate = self.scheduler.get_period_result()
+        ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, prompt_none_count, token_none_count = self.scheduler.get_period_result()
+        # print(prompt_none_count,token_none_count)
         TTFT_SLO = [2, 3, 6]
         TBT_SLO = [1.25, 1.5, 5]
 
@@ -275,6 +302,18 @@ class RLStateCollector:
             snapshot.append(scaling_up_token)
             snapshot.append(draining_token)
 
+        # --- F. None计数特征（瓶颈指标）---
+        if cfg["needs_prompt_none_count"]:
+            snapshot.append(prompt_none_count)
+        if cfg["needs_token_none_count"]:
+            snapshot.append(token_none_count)
+
+        # --- G. 上一次动作特征 ---
+        # 将上一次的动作添加到状态中，帮助 agent 了解自己之前做了什么决策
+        # 根据配置决定是否包含
+        if cfg.get("needs_last_action", False):
+            snapshot.append(self.last_action)
+
         # --- 更新累积状态供下次使用 ---
         # 无论是否需要这些特征，都需要更新统计值，因为可能被其他 collector 使用
         self.last_stats.update({
@@ -284,7 +323,7 @@ class RLStateCollector:
         })
 
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
-        reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, ins_p_queue, ins_d_queue]
+        reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead]
         instance_num = [n_p, n_t, util_p, util_d]
 
         result = (np.array(snapshot, dtype=np.float32), instance_num, reward_stats, rps)
@@ -376,15 +415,35 @@ class RLStateCollector:
             norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # draining_token
             idx += 1
 
+        # None count features (瓶颈指标，使用log1p归一化)
+        if cfg["needs_prompt_none_count"]:
+            norm_vec.append(np.log1p(raw_vector[idx]) / 500.0)  # prompt_none_count
+            idx += 1
+        if cfg["needs_token_none_count"]:
+            norm_vec.append(np.log1p(raw_vector[idx]) / 500.0)  # token_none_count
+            idx += 1
+
+        # Last action feature (动作通常在 [-1, 1] 范围内，使用 tanh 归一化到 [-1, 1])
+        # 根据配置决定是否归一化
+        if cfg.get("needs_last_action", False):
+            norm_vec.append(np.tanh(raw_vector[idx]))  # last_action
+            idx += 1
+
         return np.array(norm_vec, dtype=np.float32)
 
-    def get_state_and_stats(self, current_time, interval):
+    def get_state_and_stats(self, current_time, interval, last_action=None):
         """
-        统一接口，根据 mode 返回对应的堆叠状态：
-        - joint: 19 维 * stack_size
-        - prompt: 13 维 * stack_size
-        - token: 13 维 * stack_size
+        统一接口，根据 mode 返回对应的堆叠状态（包含上一次动作）：
+        - joint: (原维度 + 1) * stack_size（+1 是上一次动作）
+        - prompt: (原维度 + 1) * stack_size（+1 是上一次动作）
+        - token: (原维度 + 1) * stack_size（+1 是上一次动作）
+        
+        :param last_action: 上一次执行的动作值（可选），如果提供则更新 last_action
         """
+        # 如果提供了上一次动作，更新它
+        if last_action is not None:
+            self.last_action = float(last_action)
+        
         raw_snapshot, instance_num, reward_stats, rps = self._collect_snapshot(current_time, interval)
         normalized = self._normalize(raw_snapshot)
 
@@ -563,13 +622,16 @@ class RLStateCollector:
     def feature_dim(self):
         """
         根据模式返回不同的单步特征维度：
-        - joint: 23 (rps + prompt_rate + token_rate + prompt_len + output_len + 
+        - joint: 25 (rps + prompt_rate + token_rate + prompt_len + output_len + 
                      p_queue + d_queue + wait_time + n_p + n_t + util_p + util_d + 
-                     util_mem + 3*ttft_rate + 3*tbt_rate + 4*scaling)
-        - prompt: 13 (rps + prompt_rate + prompt_len + p_queue + wait_time + 
-                      n_p + util_p + util_mem + 3*ttft_rate + 2*scaling_prompt)
-        - token: 13 (rps + token_rate + output_len + d_queue + wait_time + 
-                     n_t + util_d + util_mem + 3*tbt_rate + 2*scaling_token)
+                     util_mem + 3*ttft_rate + 3*tbt_rate + 4*scaling + 
+                     2*none_count + last_action)
+        - prompt: 14 (rps + prompt_rate + prompt_len + p_queue + wait_time + 
+                      n_p + util_p + util_mem + 3*ttft_rate + 2*scaling_prompt + 
+                      prompt_none_count + last_action)
+        - token: 14 (rps + token_rate + output_len + d_queue + wait_time + 
+                     n_t + util_d + util_mem + 3*tbt_rate + 2*scaling_token + 
+                     token_none_count + last_action)
         """
         cfg = self.feature_config
         dim = 0
@@ -619,5 +681,15 @@ class RLStateCollector:
             dim += 2
         if cfg["needs_scaling_token"]:
             dim += 2
+        
+        # None count (瓶颈指标)
+        if cfg["needs_prompt_none_count"]:
+            dim += 1
+        if cfg["needs_token_none_count"]:
+            dim += 1
+        
+        # Last action (根据配置决定是否包含)
+        if cfg.get("needs_last_action", False):
+            dim += 1
         
         return dim

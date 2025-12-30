@@ -233,7 +233,8 @@ class TraceRLSimulator(Simulator):
         self.router = router
         self.arbiter = arbiter
         self.decision_interval = 2  # 保存间隔
-        self.enabled_features =["rate", "length", "queue", "instance_count", "utilization", "scaling"]
+        # self.enabled_features =["rate", "length", "queue", "instance_count", "utilization", "scaling","slo"]
+        self.enabled_features=["queue","last_action","rps","none_count"]
         self.rl_config = {
             "w_cost": 0.7,
             "w_slo": 10,
@@ -242,9 +243,13 @@ class TraceRLSimulator(Simulator):
             "action_scale_step": 5,
             "action_mig_step": 3,
             "min_instances_per_pool": 1,
-            "max_total_instances": 100
+            "max_total_instances": 100,
+            "stack_size": 4  # 状态堆叠的时间窗大小
         }
         rl_config = self.rl_config
+        
+        # 从配置中获取 stack_size，默认为 4
+        self.stack_size = self.rl_config.get("stack_size", 4)
 
         # 用于保存上一次决策时的统计快照，用于计算区间内的速率（Rate）
         # prompt / token 两个 RL 代理分别使用各自的状态收集器
@@ -252,7 +257,7 @@ class TraceRLSimulator(Simulator):
             cluster=cluster,
             router=router,
             applications=applications,
-            stack_size=4,
+            stack_size=self.stack_size,
             mode="prompt",
             enabled_features=self.enabled_features
         )
@@ -260,7 +265,7 @@ class TraceRLSimulator(Simulator):
             cluster=cluster,
             router=router,
             applications=applications,
-            stack_size=4,
+            stack_size=self.stack_size,
             mode="token",
             enabled_features=self.enabled_features
         )
@@ -298,10 +303,15 @@ class TraceRLSimulator(Simulator):
         self.gamma = 0.99
         self.lr_actor = 0.001
         self.lr_critic = 0.001
+        self.hidden_dim = 128  # 神经网络隐藏层维度
 
         # --- 初始化两个 PPO Agent ---
         prompt_state_dim = self.prompt_collector.feature_dim * self.prompt_collector.stack_size
         token_state_dim = self.token_collector.feature_dim * self.token_collector.stack_size
+        
+        # 添加调试信息
+        logging.info(f"Prompt feature_dim: {self.prompt_collector.feature_dim}, stack_size: {self.prompt_collector.stack_size}, state_dim: {prompt_state_dim}")
+        logging.info(f"Token feature_dim: {self.token_collector.feature_dim}, stack_size: {self.token_collector.stack_size}, state_dim: {token_state_dim}")
 
         self.prompt_agent = PPO(
             prompt_state_dim,
@@ -313,6 +323,7 @@ class TraceRLSimulator(Simulator):
             self.eps_clip,
             self.has_continuous_action_space,
             self.action_std,
+            self.hidden_dim,
         )
         self.token_agent = PPO(
             token_state_dim,
@@ -324,6 +335,7 @@ class TraceRLSimulator(Simulator):
             self.eps_clip,
             self.has_continuous_action_space,
             self.action_std,
+            self.hidden_dim,
         )
 
         # --- 训练状态追踪 ---
@@ -332,6 +344,8 @@ class TraceRLSimulator(Simulator):
         self.last_token_state = None
         self.last_prompt_action_executed = True
         self.last_token_action_executed = True
+        self.last_prompt_action = 0.0  # 上一次 prompt 动作值
+        self.last_token_action = 0.0  # 上一次 token 动作值
         self.save_model_freq = 1000  # 保存模型频率
         self.finish_training = False
 
@@ -376,7 +390,7 @@ class TraceRLSimulator(Simulator):
                 cluster=new_cluster,
                 router=new_router,
                 applications=new_applications,
-                stack_size=4,
+                stack_size=self.stack_size,
                 mode="prompt",
                 reset_shared_stats=True,  # 重置共享统计状态
                 enabled_features=self.enabled_features
@@ -385,7 +399,7 @@ class TraceRLSimulator(Simulator):
                 cluster=new_cluster,
                 router=new_router,
                 applications=new_applications,
-                stack_size=4,
+                stack_size=self.stack_size,
                 mode="token",
                 reset_shared_stats=False,  # 不重复重置（已经在 prompt_collector 中重置）
                 enabled_features=self.enabled_features
@@ -417,11 +431,20 @@ class TraceRLSimulator(Simulator):
         from RL.state import RLStateCollector
         RLStateCollector.clear_snapshot_cache()
 
+        # 重置 scheduler 的状态
+        # 如果提供了新的 applications，使用新的 applications；否则使用现有的 applications
+        applications_to_reset = new_applications if new_applications is not None else self.applications
+        for application in applications_to_reset.values():
+            if hasattr(application, 'scheduler') and application.scheduler is not None:
+                application.scheduler.reset()
+
         # 重置上一次的状态（新 trace 开始时没有上一状态）
         self.last_prompt_state = None
         self.last_token_state = None
         self.last_prompt_action_executed = True
         self.last_token_action_executed = True
+        self.last_prompt_action = 0.0
+        self.last_token_action = 0.0
         self.finish_training = False
         
         # logging.info(f"Simulator reset for new trace with {len(new_trace.requests)} requests")
@@ -455,11 +478,15 @@ class TraceRLSimulator(Simulator):
         # ---------------------------------------------------------
         # 1. 状态收集 (State Collection)
         # ---------------------------------------------------------
+        # 获取上一次的动作值（如果存在）
+        last_prompt_action = getattr(self, 'last_prompt_action', 0.0)
+        last_token_action = getattr(self, 'last_token_action', 0.0)
+        
         prompt_state, raw_stats, instance_num, rps = self.prompt_collector.get_state_and_stats(
-            self.time, self.decision_interval
+            self.time, self.decision_interval, last_action=last_prompt_action
         )
         token_state, _, _, _ = self.token_collector.get_state_and_stats(
-            self.time, self.decision_interval
+            self.time, self.decision_interval, last_action=last_token_action
         )
         logging.debug(f"RL Decision Triggered at time {current_time}")
 
@@ -467,13 +494,18 @@ class TraceRLSimulator(Simulator):
         # 2. 基于上一时刻的状态计算两个 Agent 的奖励
         # ---------------------------------------------------------
         if self.last_prompt_state is not None and self.last_token_state is not None:
+            # 从 raw_stats 中提取 avg_queue_time 和 avg_nth_token_overhead
+            # reward_stats 格式: [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, 
+            #                     n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, ins_p_queue, 
+            #                     ins_d_queue, avg_queue_time, avg_nth_token_overhead]
+            
             prompt_reward, prompt_info = self.prompt_reward_calculator.calculate_reward(
                 self.cluster,
                 self.applications,
                 raw_stats,
                 instance_num,
                 action_executed=self.last_prompt_action_executed,
-                step=self.decision_step,
+                step=self.decision_step
             )
             token_reward, token_info = self.token_reward_calculator.calculate_reward(
                 self.cluster,
@@ -481,7 +513,7 @@ class TraceRLSimulator(Simulator):
                 raw_stats,
                 instance_num,
                 action_executed=self.last_token_action_executed,
-                step=self.decision_step,
+                step=self.decision_step
             )
 
             # 写入各自的 buffer
@@ -503,8 +535,7 @@ class TraceRLSimulator(Simulator):
                 logging.info(
                     f"Step: {self.decision_step} | "
                     f"PromptReward: {prompt_reward:.2f} (machine={prompt_info['cost_score']:.2f},{prompt_info['use_time']},sch_queue={prompt_info['p_queue_len']},ttft_p99={prompt_info['ttft_p99']:.2f},instance_queue={prompt_info['instance_p_queue_len']}) | "
-                    f"TokenReward: {token_reward:.2f} (machine={token_info['cost_score']:.2f},{token_info['use_time']},sch_queue={token_info['t_queue_len']},tbt_p99={token_info['tbt_p99']:.2f},instance_queue={token_info['instance_t_queue_len']})"
-                    f""
+                    f"TokenReward: {token_reward:.2f} (machine={token_info['cost_score']:.2f},{token_info['use_time']},sch_queue={token_info['t_queue_len']},tbt_p99={token_info['tbt_p99']:.2f},instance_queue={token_info['instance_t_queue_len']},avg_queue_time={token_info['avg_queue_time']:.3f},avg_nth_token_overhead={token_info['avg_nth_token_overhead']:.3f})"
                 )
         if self.finish_training:
             return
@@ -553,6 +584,9 @@ class TraceRLSimulator(Simulator):
         self.last_token_action_executed = token_executed
         self.last_prompt_state = prompt_state
         self.last_token_state = token_state
+        # 保存上一次的动作值，用于下一次状态收集
+        self.last_prompt_action = prompt_alpha
+        self.last_token_action = token_alpha
 
         self.decision_step += 1
 
@@ -577,6 +611,13 @@ class TraceRLSimulator(Simulator):
         Save results at the end of the simulation.
         第一次运行时清空文件，后续循环 trace 时追加。
         """
+        import os
+        from hydra.utils import get_original_cwd
+        
+        # 获取当前工作目录（Hydra 切换后的目录）
+        current_dir = os.getcwd()
+        logging.info(f"Saving results to directory: {current_dir}")
+        
         self.router.save_results()
 
         sched_results = {}
@@ -601,12 +642,23 @@ class TraceRLSimulator(Simulator):
         if is_first_save:
             TraceRLSimulator._first_save = False
 
-        # save summary results
-        utils.save_dict_as_csv(summary_results, "summary.csv", append=not is_first_save)
+        # 构建保存路径（使用绝对路径确保正确）
+        summary_path = os.path.join(current_dir, "summary.csv")
+        utils.save_dict_as_csv(summary_results, summary_path, append=not is_first_save)
+        logging.info(f"Summary results saved to: {summary_path}")
 
         if detailed:
+            # 确保 detailed 目录存在
+            detailed_dir = os.path.join(current_dir, "detailed")
+            os.makedirs(detailed_dir, exist_ok=True)
+            
             # create a dataframe of all requests, save as csv
             for application_id, result in sched_results.items():
-                utils.save_dict_as_csv(result, f"detailed/{application_id}.csv", append=not is_first_save)
+                sched_path = os.path.join(detailed_dir, f"{application_id}.csv")
+                utils.save_dict_as_csv(result, sched_path, append=not is_first_save)
+                logging.info(f"Scheduler results for {application_id} saved to: {sched_path}")
+                
             for application_id, result in alloc_results.items():
-                utils.save_dict_as_csv(result, f"detailed/{application_id}_alloc.csv", append=not is_first_save)
+                alloc_path = os.path.join(detailed_dir, f"{application_id}_alloc.csv")
+                utils.save_dict_as_csv(result, alloc_path, append=not is_first_save)
+                logging.info(f"Allocator results for {application_id} saved to: {alloc_path}")

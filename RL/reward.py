@@ -52,6 +52,9 @@ class RLRewardCalculator:
     def calculate_reward(self, cluster, applications, raw_stats, instance_num, action_executed=True, step=0):
         """
         基于排队论估算的即时奖励，修复马尔可夫性破坏问题。
+        
+        :param avg_queue_time: 平均队列时间
+        :param avg_nth_token_overhead: 平均 nth_token_overhead
         """
 
         # -------------------------------------------------------------
@@ -152,12 +155,13 @@ class RLRewardCalculator:
         # reward_stats = [prompt_rate, token_rate, p_queue, d_queue, n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, p_queue_len, d_queue_len]
         # Agent 会为了让 penalty_slo 保持为 0 而不敢越线
         # 在 penalty_slo 为 0 的前提下，它会尽可能减小 cost_term
-        queue_len = raw_stats[2] if self.mode == "prompt" else raw_stats[2]
+        queue_len = raw_stats[2] if self.mode == "prompt" else raw_stats[3]
         if self.mode == "prompt":
             use_time = applications[0].scaling_manager.calculate_prompt_instance_time_since_last()
         else :
             use_time = applications[0].scaling_manager.calculate_token_instance_time_since_last()
-        reward = -self.w_slo * np.log1p(q_prompt) - self.w_cost * use_time
+        reward = -3 * (queue_len/10000)
+        # - self.w_cost * use_time
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)
 
         # 奖励3.0
@@ -182,8 +186,6 @@ class RLRewardCalculator:
         info = {
             'step':step,
             'reward':reward,
-            'ratio_ttft': ratio_ttft,
-            'ratio_tbt': ratio_tbt,
             'cost_score': cost_score,
             'ttft_p50':raw_stats[7][0],
             'ttft_p90':raw_stats[7][1],
@@ -191,11 +193,13 @@ class RLRewardCalculator:
             'tbt_p50':raw_stats[8][0],
             'tbt_p90':raw_stats[8][1],
             'tbt_p99':raw_stats[8][2],
-            'p_queue_len':raw_stats[2],
+            'p_queue_len':raw_stats[2], #sch_queue
             't_queue_len':raw_stats[3],
             'instance_p_queue_len':raw_stats[9],
             'instance_t_queue_len':raw_stats[10],
-            'use_time':use_time
+            'use_time':use_time,
+            'avg_queue_time': raw_stats[11],
+            'avg_nth_token_overhead': raw_stats[12]
         }
         return reward,info
 
