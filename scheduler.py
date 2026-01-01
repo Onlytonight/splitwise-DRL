@@ -21,6 +21,9 @@ class Scheduler(ABC):
     """
     Scheduler schedules Requests to Instances and spawns Executors to handle them.
     """
+    # 类级别的缓存，用于 get_period_result 的 mode 参数
+    _period_result_cache = None
+    
     def __init__(self,
                  application,
                  router,
@@ -235,7 +238,23 @@ class Scheduler(ABC):
 
         return array_results
 
-    def get_period_result(self):
+    def get_period_result(self, mode=None):
+        """
+        获取周期结果，支持 mode 参数进行缓存控制
+        :param mode: "prompt" 时返回并缓存结果，"token" 时取缓存结果并清除缓存
+        :return: (ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead)
+        """
+        # 如果 mode 是 "token"，返回缓存结果并清除缓存
+        if mode == "token":
+            if Scheduler._period_result_cache is not None:
+                result = Scheduler._period_result_cache
+                Scheduler._period_result_cache = None  # 清除缓存
+                return result
+            else:
+                # 如果没有缓存，返回默认值
+                return [0,0,0], [0,0,0], [0,0], 0.0, 0.0
+        
+        # 如果 mode 是 "prompt" 或 None，计算新结果
         new_completed_count = len(self.completed_queue)
         if new_completed_count > self.last_completed_count:
             # 有新完成的请求
@@ -306,13 +325,25 @@ class Scheduler(ABC):
 
                 # 返回归一化后的p50和p99分位数以及超出阈值的比例，以及平均 queue_time 和平均 nth_token_overhead
                 self.last_completed_count = new_completed_count
-                return [p50_normalized_ttft,p90_normalized_ttft, p99_normalized_ttft], [p50_normalized_tbt,
+                result = [p50_normalized_ttft,p90_normalized_ttft, p99_normalized_ttft], [p50_normalized_tbt,
                         p90_normalized_tbt,p99_normalized_tbt],[ttft_over_6_ratio,tbt_over_5_ratio], avg_queue_time, avg_nth_token_overhead
+                
+                # 如果 mode 是 "prompt"，缓存结果
+                if mode == "prompt":
+                    Scheduler._period_result_cache = result
+                
+                return result
 
             self.last_completed_count = new_completed_count
 
         # 如果没有新完成的请求，返回0
-        return [0,0,0], [0,0,0], [0,0], 0.0, 0.0
+        result = [0,0,0], [0,0,0], [0,0], 0.0, 0.0
+        
+        # 如果 mode 是 "prompt"，缓存结果
+        if mode == "prompt":
+            Scheduler._period_result_cache = result
+        
+        return result
 
 
 
@@ -321,6 +352,9 @@ class KVScheduler(Scheduler):
     KVScheduler is a base class for Schedulers that ship KV caches.
     It does not implement the schedule method.
     """
+    # 类级别的缓存，用于 get_period_result 的 mode 参数（包含 prompt_none_count 和 token_none_count）
+    _period_result_cache = None
+    
     def __init__(self,
                  application,
                  router,
@@ -1007,12 +1041,26 @@ class MixedPoolScheduler(KVScheduler):
         avg_prompt_size = total_pending_prompt_queue_length/len(self.pending_queue) if len(self.pending_queue) > 0 else 0
         return total_pending_prompt_queue_length, total_pending_tokens, total_time,avg_prompt_size
 
-    def get_period_result(self):
+    def get_period_result(self, mode=None):
         """
         重写父类方法，添加prompt_none_count和token_none_count的返回和清零
+        支持 mode 参数进行缓存控制
+        :param mode: "prompt" 时返回并缓存结果，"token" 时取缓存结果并清除缓存
+        :return: (ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, prompt_none_count, token_none_count)
         """
-        # 调用父类方法获取原有返回值
-        result = super().get_period_result()
+        # 如果 mode 是 "token"，返回缓存结果并清除缓存
+        if mode == "token":
+            if KVScheduler._period_result_cache is not None:
+                result = KVScheduler._period_result_cache
+                KVScheduler._period_result_cache = None  # 清除缓存
+                return result
+            else:
+                # 如果没有缓存，返回默认值
+                return [0,0,0], [0,0,0], [0,0], 0.0, 0.0, 0, 0
+        
+        # 如果 mode 是 "prompt" 或 None，计算新结果
+        # 调用父类方法获取原有返回值（传递 mode 参数）
+        result = super().get_period_result(mode=mode)
         
         # 获取当前计数器的值
         prompt_none_count = self.prompt_none_count
@@ -1023,7 +1071,13 @@ class MixedPoolScheduler(KVScheduler):
         self.token_none_count = 0
         
         # 返回原有结果加上两个计数器
-        return result + (prompt_none_count, token_none_count)
+        full_result = result + (prompt_none_count, token_none_count)
+        
+        # 如果 mode 是 "prompt"，缓存完整结果（包含 prompt_none_count 和 token_none_count）
+        if mode == "prompt":
+            KVScheduler._period_result_cache = full_result
+        
+        return full_result
 
 
 

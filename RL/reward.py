@@ -156,10 +156,8 @@ class RLRewardCalculator:
         # Agent 会为了让 penalty_slo 保持为 0 而不敢越线
         # 在 penalty_slo 为 0 的前提下，它会尽可能减小 cost_term
         queue_len = raw_stats[2] if self.mode == "prompt" else raw_stats[3]
-        if self.mode == "prompt":
-            use_time = applications[0].scaling_manager.calculate_prompt_instance_time_since_last()
-        else :
-            use_time = applications[0].scaling_manager.calculate_token_instance_time_since_last()
+        # 从 raw_stats 中获取 usetime（由 state.py 的 get_usetime 函数计算）
+        use_time = raw_stats[13]
         reward = -3 * (queue_len/10000)
         # - self.w_cost * use_time
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)

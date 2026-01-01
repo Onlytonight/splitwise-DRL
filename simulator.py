@@ -234,9 +234,9 @@ class TraceRLSimulator(Simulator):
         self.arbiter = arbiter
         self.decision_interval = 2  # 保存间隔
         # self.enabled_features =["rate", "length", "queue", "instance_count", "utilization", "scaling","slo"]
-        self.enabled_features=["queue","last_action","rps","none_count"]
+        self.enabled_features=["queue","none_count", "instance_count"]
         self.rl_config = {
-            "w_cost": 0.7,
+            "w_cost": 0.5,
             "w_slo": 10,
             "w_switch": 0.1,
             "w_util": 0.2,
@@ -482,11 +482,15 @@ class TraceRLSimulator(Simulator):
         last_prompt_action = getattr(self, 'last_prompt_action', 0.0)
         last_token_action = getattr(self, 'last_token_action', 0.0)
         
-        prompt_state, raw_stats, instance_num, rps = self.prompt_collector.get_state_and_stats(
-            self.time, self.decision_interval, last_action=last_prompt_action
+        prompt_state, p_raw_stats, instance_num, rps = self.prompt_collector.get_state_and_stats(
+            self.time, self.decision_interval, 
+            last_prompt_action=last_prompt_action, 
+            last_token_action=last_token_action
         )
-        token_state, _, _, _ = self.token_collector.get_state_and_stats(
-            self.time, self.decision_interval, last_action=last_token_action
+        token_state, t_raw_stats, _, _ = self.token_collector.get_state_and_stats(
+            self.time, self.decision_interval, 
+            last_prompt_action=last_prompt_action, 
+            last_token_action=last_token_action
         )
         logging.debug(f"RL Decision Triggered at time {current_time}")
 
@@ -502,7 +506,7 @@ class TraceRLSimulator(Simulator):
             prompt_reward, prompt_info = self.prompt_reward_calculator.calculate_reward(
                 self.cluster,
                 self.applications,
-                raw_stats,
+                p_raw_stats,
                 instance_num,
                 action_executed=self.last_prompt_action_executed,
                 step=self.decision_step
@@ -510,7 +514,7 @@ class TraceRLSimulator(Simulator):
             token_reward, token_info = self.token_reward_calculator.calculate_reward(
                 self.cluster,
                 self.applications,
-                raw_stats,
+                t_raw_stats,
                 instance_num,
                 action_executed=self.last_token_action_executed,
                 step=self.decision_step
@@ -534,8 +538,8 @@ class TraceRLSimulator(Simulator):
             if self.decision_step % 1 == 0:
                 logging.info(
                     f"Step: {self.decision_step} | "
-                    f"PromptReward: {prompt_reward:.2f} (machine={prompt_info['cost_score']:.2f},{prompt_info['use_time']},sch_queue={prompt_info['p_queue_len']},ttft_p99={prompt_info['ttft_p99']:.2f},instance_queue={prompt_info['instance_p_queue_len']}) | "
-                    f"TokenReward: {token_reward:.2f} (machine={token_info['cost_score']:.2f},{token_info['use_time']},sch_queue={token_info['t_queue_len']},tbt_p99={token_info['tbt_p99']:.2f},instance_queue={token_info['instance_t_queue_len']},avg_queue_time={token_info['avg_queue_time']:.3f},avg_nth_token_overhead={token_info['avg_nth_token_overhead']:.3f})"
+                    f"lastAction:{self.last_prompt_action},PromptReward: {prompt_reward:.2f} (machine={prompt_info['cost_score']:.2f},{prompt_info['use_time']},sch_queue={prompt_info['p_queue_len']},ttft_p99={prompt_info['ttft_p99']:.2f},instance_queue={prompt_info['instance_p_queue_len']}) | "
+                    f"lastAction:{self.last_token_action},TokenReward: {token_reward:.2f} (machine={token_info['cost_score']:.2f},{token_info['use_time']},sch_queue={token_info['t_queue_len']},tbt_p99={token_info['tbt_p99']:.2f},instance_queue={token_info['instance_t_queue_len']},avg_queue_time={token_info['avg_queue_time']:.3f},avg_nth_token_overhead={token_info['avg_nth_token_overhead']:.3f})"
                 )
         if self.finish_training:
             return
@@ -543,7 +547,7 @@ class TraceRLSimulator(Simulator):
         # 3. 周期性更新两个 PPO 策略
         # ---------------------------------------------------------
         if self.decision_step % self.update_timestep == 0 and self.decision_step > 0:
-            # logging.info(f"Updating PPO Policies at step {self.decision_step}...")
+            logging.info(f"Updating PPO Policies at step {self.decision_step}...")
             self.prompt_agent.update()
             self.token_agent.update()
 

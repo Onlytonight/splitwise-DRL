@@ -17,9 +17,12 @@ class RLStateCollector:
         'completed_prompts': 0,
         'kv_transferred_bytes': 0
     }
-    _snapshot_cache = None
-    _snapshot_cache_time = None
-    _snapshot_cache_interval = None
+    # 为每个 mode 维护独立的缓存，避免 prompt 和 token collector 共享错误的缓存
+    _snapshot_cache = {}  # 改为字典，key 为 mode
+    _snapshot_cache_time = {}  # 改为字典，key 为 mode
+    _snapshot_cache_interval = {}  # 改为字典，key 为 mode
+    _snapshot_cache_prompt_action = {}  # 改为字典，key 为 mode
+    _snapshot_cache_token_action = {}  # 改为字典，key 为 mode
 
     # 共享特征：prompt 和 token 模式都需要的特征
     # 修改这里会影响 prompt 和 token 两个模式
@@ -28,6 +31,9 @@ class RLStateCollector:
         "needs_wait_time": True,
         "needs_util_mem": True,
         "needs_last_action": True,  # 上一次动作特征
+        "needs_none_count": True,  # None计数特征（包含 prompt_none_count 和 token_none_count）
+        "needs_instance_count": True,  # 实例数量特征（包含 n_p 和 n_t）
+        "needs_usetime": True,  # 实例使用时间特征
     }
     
     # 共享特征的名称映射，用于通过 enabled_features 控制
@@ -36,18 +42,18 @@ class RLStateCollector:
         "wait_time": "needs_wait_time",
         "util_mem": "needs_util_mem",
         "action": "needs_last_action",  # 或 "last_action"
-        "last_action": "needs_last_action",  # 支持两种名称
+        "none_count": "needs_none_count",  # None计数特征
+        "instance_count": "needs_instance_count",  # 实例数量特征
+        "use_time": "needs_usetime", 
     }
 
     _FEATURE_PAIRS = {
         "rate": ("needs_prompt_rate", "needs_token_rate", True),
         "length": ("needs_prompt_len", "needs_output_len", True),
         "queue": ("needs_p_queue", "needs_d_queue", True),
-        "instance_count": ("needs_n_p", "needs_n_t", True),
         "utilization": ("needs_util_p", "needs_util_d", True),
         "slo": ("needs_ttft", "needs_tbt", True),
         "scaling": ("needs_scaling_prompt", "needs_scaling_token", True),
-        "none_count": ("needs_prompt_none_count", "needs_token_none_count", True),
     }
     
     # Joint 模式的完整配置（所有特征都启用）
@@ -60,8 +66,7 @@ class RLStateCollector:
         "needs_p_queue": True,
         "needs_d_queue": True,
         "needs_wait_time": True,
-        "needs_n_p": True,
-        "needs_n_t": True,
+        "needs_instance_count": True,
         "needs_util_p": True,
         "needs_util_d": True,
         "needs_util_mem": True,
@@ -70,8 +75,8 @@ class RLStateCollector:
         "needs_scaling_prompt": True,
         "needs_scaling_token": True,
         "needs_last_action": True,
-        "needs_prompt_none_count": True,
-        "needs_token_none_count": True,
+        "needs_none_count": True,
+        "needs_usetime": True,
     }
     
     @classmethod
@@ -82,8 +87,8 @@ class RLStateCollector:
         
         :param mode: "joint" / "prompt" / "token"
         :param enabled_features: 可选，要启用的特征名称列表
-                                 可以包含特征对名称（如 "instance_count", "scaling"）
-                                 也可以包含共享特征名称（如 "rps", "wait_time", "util_mem"）
+                                 可以包含特征对名称（如 "scaling"）
+                                 也可以包含共享特征名称（如 "rps", "wait_time", "util_mem", "instance_count"）
                                  如果为 None，则使用默认配置（所有特征都启用）
         :return: 特征配置字典
         """
@@ -152,8 +157,8 @@ class RLStateCollector:
         
         :param mode: "joint" / "prompt" / "token"
         :param enabled_features: 可选，要启用的特征名称列表
-                                 可以包含特征对名称（如 "instance_count", "scaling"）
-                                 也可以包含共享特征名称（如 "rps", "wait_time", "util_mem"）
+                                 可以包含特征对名称（如 "scaling"）
+                                 也可以包含共享特征名称（如 "rps", "wait_time", "util_mem", "instance_count"）
         :return: 特征配置字典
         """
         return cls._build_feature_config(mode, enabled_features)
@@ -168,9 +173,9 @@ class RLStateCollector:
         :param reset_shared_stats: 是否重置共享的统计状态（用于新 trace 开始时）
         :param enabled_features: 可选，要启用的特征名称列表
                                  如果为 None，则使用默认配置（所有特征都启用）
-                                 可用的特征对名称：rate, length, queue, instance_count, utilization, slo, scaling, none_count
-                                 可用的共享特征名称：rps, wait_time, util_mem, action (或 last_action)
-                                 注意：none_count 特征对包含 prompt_none_count 和 token_none_count
+                                 可用的特征对名称：rate, length, queue, utilization, slo, scaling
+                                 可用的共享特征名称：rps, wait_time, util_mem, action (或 last_action), none_count, instance_count, usetime (或 use_time)
+                                 注意：none_count 和 instance_count 共享特征分别包含 prompt/token 的两个值，两个代理都会同时包含这两个值
         """
         assert mode in ("joint", "prompt", "token")
         
@@ -202,16 +207,31 @@ class RLStateCollector:
             self.last_stats = RLStateCollector._shared_last_stats
 
 
-    def _collect_snapshot(self, current_time, interval):
+    def _collect_snapshot(self, current_time, interval, last_prompt_action=None, last_token_action=None):
         """
         根据初始化时选择的特征配置，只收集需要的原始状态数据。
         使用类级别的缓存机制，确保在一次决策周期内只被调用一次。
+        注意：为每个 mode 维护独立的缓存，避免 prompt 和 token collector 共享错误的缓存。
+        
+        :param last_prompt_action: 上一次 prompt 代理的动作值（可选）
+        :param last_token_action: 上一次 token 代理的动作值（可选）
         """
-        # 检查缓存：如果时间戳和间隔相同，说明是同一个决策周期内的调用，直接返回缓存
-        if (RLStateCollector._snapshot_cache is not None and 
-            RLStateCollector._snapshot_cache_time == current_time and
-            RLStateCollector._snapshot_cache_interval == interval):
-            return RLStateCollector._snapshot_cache
+        # 检查缓存：如果时间戳、间隔和动作值都相同，说明是同一个决策周期内的调用，直接返回缓存
+        # 如果动作值为 None，则使用实例变量
+        # 使用 mode 作为缓存键，确保不同 mode 的 collector 使用各自的缓存
+        mode = self.mode
+        cached_prompt_action = RLStateCollector._snapshot_cache_prompt_action.get(mode)
+        cached_token_action = RLStateCollector._snapshot_cache_token_action.get(mode)
+        current_prompt_action = last_prompt_action if last_prompt_action is not None else getattr(self, 'last_prompt_action', 0.0)
+        current_token_action = last_token_action if last_token_action is not None else getattr(self, 'last_token_action', 0.0)
+        
+        if (mode in RLStateCollector._snapshot_cache and 
+            RLStateCollector._snapshot_cache[mode] is not None and 
+            RLStateCollector._snapshot_cache_time.get(mode) == current_time and
+            RLStateCollector._snapshot_cache_interval.get(mode) == interval and
+            cached_prompt_action == current_prompt_action and
+            cached_token_action == current_token_action):
+            return RLStateCollector._snapshot_cache[mode]
         
         snapshot = []
         stats = self.last_stats
@@ -264,9 +284,9 @@ class RLStateCollector:
         # 无论特征配置如何，都需要计算利用率用于奖励计算
         util_p, util_d = self.get_avg_utilization(current_time, interval)
 
-        if cfg["needs_n_p"]:
+        # 实例数量特征（类似 none_count，两个代理都同时包含 n_p 和 n_t）
+        if cfg.get("needs_instance_count", False):
             snapshot.append(n_p)
-        if cfg["needs_n_t"]:
             snapshot.append(n_t)
         if cfg["needs_util_p"]:
             snapshot.append(util_p)
@@ -277,7 +297,8 @@ class RLStateCollector:
 
         # --- D. 性能反馈 (SLO) ---
         # 无论特征配置如何，都需要获取真实的SLO数据用于奖励计算
-        ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, prompt_none_count, token_none_count = self.scheduler.get_period_result()
+        # 根据 mode 传入参数：prompt 时返回并缓存结果，token 时取缓存结果并清除缓存
+        ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, prompt_none_count, token_none_count = self.scheduler.get_period_result(mode=self.mode)
         # print(prompt_none_count,token_none_count)
         TTFT_SLO = [2, 3, 6]
         TBT_SLO = [1.25, 1.5, 5]
@@ -303,16 +324,28 @@ class RLStateCollector:
             snapshot.append(draining_token)
 
         # --- F. None计数特征（瓶颈指标）---
-        if cfg["needs_prompt_none_count"]:
+        # 类似 last_action，两个代理都同时包含 prompt_none_count 和 token_none_count
+        if cfg.get("needs_none_count", False):
             snapshot.append(prompt_none_count)
-        if cfg["needs_token_none_count"]:
             snapshot.append(token_none_count)
 
         # --- G. 上一次动作特征 ---
         # 将上一次的动作添加到状态中，帮助 agent 了解自己之前做了什么决策
         # 根据配置决定是否包含
+        # 两个代理都接收两个动作（prompt_action 和 token_action）
         if cfg.get("needs_last_action", False):
-            snapshot.append(self.last_action)
+            # 如果提供了动作参数，使用它们；否则使用实例变量
+            prompt_action = last_prompt_action if last_prompt_action is not None else getattr(self, 'last_prompt_action', 0.0)
+            token_action = last_token_action if last_token_action is not None else getattr(self, 'last_token_action', 0.0)
+            snapshot.append(prompt_action)
+            snapshot.append(token_action)
+
+        # --- H. 实例使用时间特征 ---
+        # 根据配置决定是否包含
+        use_time = self.get_usetime()
+
+        if cfg.get("needs_usetime", False):
+            snapshot.append(use_time)
 
         # --- 更新累积状态供下次使用 ---
         # 无论是否需要这些特征，都需要更新统计值，因为可能被其他 collector 使用
@@ -323,15 +356,23 @@ class RLStateCollector:
         })
 
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
-        reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead]
+        # 获取 usetime
+        reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time]
         instance_num = [n_p, n_t, util_p, util_d]
 
         result = (np.array(snapshot, dtype=np.float32), instance_num, reward_stats, rps)
         
-        # 缓存结果，供同一决策周期内的其他 collector 使用
-        RLStateCollector._snapshot_cache = result
-        RLStateCollector._snapshot_cache_time = current_time
-        RLStateCollector._snapshot_cache_interval = interval
+        # 缓存结果，供同一决策周期内的同一 mode 的 collector 使用
+        # 使用 mode 作为缓存键，确保不同 mode 的 collector 使用各自的缓存
+        mode = self.mode
+        RLStateCollector._snapshot_cache[mode] = result
+        RLStateCollector._snapshot_cache_time[mode] = current_time
+        RLStateCollector._snapshot_cache_interval[mode] = interval
+        # 缓存动作值，确保同一决策周期内使用相同的动作值
+        prompt_action = last_prompt_action if last_prompt_action is not None else getattr(self, 'last_prompt_action', 0.0)
+        token_action = last_token_action if last_token_action is not None else getattr(self, 'last_token_action', 0.0)
+        RLStateCollector._snapshot_cache_prompt_action[mode] = prompt_action
+        RLStateCollector._snapshot_cache_token_action[mode] = token_action
 
         return result
 
@@ -367,21 +408,23 @@ class RLStateCollector:
 
         # Queue features
         if cfg["needs_p_queue"]:
-            norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)
+            norm_vec.append(np.log1p(raw_vector[idx]+1) / 20.0)
+            # norm_vec.append(raw_vector[idx] / 10000.0)
             idx += 1
         if cfg["needs_d_queue"]:
-            norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)
+            norm_vec.append(np.log1p(raw_vector[idx]+1) / 20.0)
+            # norm_vec.append(raw_vector[idx] / 10000.0)
             idx += 1
         if cfg["needs_wait_time"]:
             norm_vec.append(np.tanh(raw_vector[idx] / 10.0))
             idx += 1
 
         # Resource features
-        if cfg["needs_n_p"]:
-            norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))
+        # 实例数量特征（类似 none_count，两个代理都同时包含 n_p 和 n_t）
+        if cfg.get("needs_instance_count", False):
+            norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # n_p
             idx += 1
-        if cfg["needs_n_t"]:
-            norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))
+            norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # n_t
             idx += 1
         if cfg["needs_util_p"]:
             norm_vec.append(np.clip(raw_vector[idx], 0, 1))
@@ -416,35 +459,56 @@ class RLStateCollector:
             idx += 1
 
         # None count features (瓶颈指标，使用log1p归一化)
-        if cfg["needs_prompt_none_count"]:
-            norm_vec.append(np.log1p(raw_vector[idx]) / 500.0)  # prompt_none_count
+        # 类似 last_action，两个代理都同时包含 prompt_none_count 和 token_none_count
+        if cfg.get("needs_none_count", False):
+            norm_prompt_none = np.log1p(raw_vector[idx]+1) / 500.0
+            norm_vec.append(norm_prompt_none)  # prompt_none_count
             idx += 1
-        if cfg["needs_token_none_count"]:
-            norm_vec.append(np.log1p(raw_vector[idx]) / 500.0)  # token_none_count
+            norm_token_none = np.log1p(raw_vector[idx]+1) / 500.0
+            norm_vec.append(norm_token_none)  # token_none_count
             idx += 1
 
         # Last action feature (动作通常在 [-1, 1] 范围内，使用 tanh 归一化到 [-1, 1])
         # 根据配置决定是否归一化
+        # 两个代理都接收两个动作（prompt_action 和 token_action）
         if cfg.get("needs_last_action", False):
-            norm_vec.append(np.tanh(raw_vector[idx]))  # last_action
+            norm_vec.append(np.tanh(raw_vector[idx]))  # last_prompt_action
             idx += 1
+            norm_vec.append(np.tanh(raw_vector[idx]))  # last_token_action
+            idx += 1
+
+        # Use time feature (使用时间，使用 log1p 归一化)
+        # 根据配置决定是否归一化
+        if cfg.get("needs_usetime", False):
+            # 使用 log1p 归一化，假设最大使用时间为 1000（可以根据实际情况调整）
+            norm_vec.append(np.log1p(raw_vector[idx]) / np.log1p(200.0)) #最大实例数*决策间隔
+            idx += 1
+
+        print(norm_vec)
 
         return np.array(norm_vec, dtype=np.float32)
 
-    def get_state_and_stats(self, current_time, interval, last_action=None):
+    def get_state_and_stats(self, current_time, interval, last_prompt_action=None, last_token_action=None):
         """
         统一接口，根据 mode 返回对应的堆叠状态（包含上一次动作）：
-        - joint: (原维度 + 1) * stack_size（+1 是上一次动作）
-        - prompt: (原维度 + 1) * stack_size（+1 是上一次动作）
-        - token: (原维度 + 1) * stack_size（+1 是上一次动作）
+        - joint: (原维度 + 2) * stack_size（+2 是两个动作：prompt_action 和 token_action）
+        - prompt: (原维度 + 2) * stack_size（+2 是两个动作：prompt_action 和 token_action）
+        - token: (原维度 + 2) * stack_size（+2 是两个动作：prompt_action 和 token_action）
         
-        :param last_action: 上一次执行的动作值（可选），如果提供则更新 last_action
+        :param last_prompt_action: 上一次 prompt 代理执行的动作值（可选），如果提供则更新
+        :param last_token_action: 上一次 token 代理执行的动作值（可选），如果提供则更新
         """
-        # 如果提供了上一次动作，更新它
-        if last_action is not None:
-            self.last_action = float(last_action)
+        # 如果提供了上一次动作，更新它们
+        if last_prompt_action is not None:
+            self.last_prompt_action = float(last_prompt_action)
+        if last_token_action is not None:
+            self.last_token_action = float(last_token_action)
         
-        raw_snapshot, instance_num, reward_stats, rps = self._collect_snapshot(current_time, interval)
+        raw_snapshot, instance_num, reward_stats, rps = self._collect_snapshot(
+            current_time, interval, 
+            last_prompt_action=last_prompt_action, 
+            last_token_action=last_token_action
+        )
         normalized = self._normalize(raw_snapshot)
 
         self.state_buffer.append(normalized)
@@ -457,10 +521,13 @@ class RLStateCollector:
         """
         清除快照缓存，应该在每次决策周期结束时调用。
         确保下一个决策周期会重新收集快照。
+        清除所有 mode 的缓存。
         """
-        cls._snapshot_cache = None
-        cls._snapshot_cache_time = None
-        cls._snapshot_cache_interval = None
+        cls._snapshot_cache.clear()
+        cls._snapshot_cache_time.clear()
+        cls._snapshot_cache_interval.clear()
+        cls._snapshot_cache_prompt_action.clear()
+        cls._snapshot_cache_token_action.clear()
 
     def get_scheduler_feature(self):
         """
@@ -614,6 +681,28 @@ class RLStateCollector:
 
         return scaling_up_prompt, scaling_up_token, draining_prompt, draining_token
 
+    def get_usetime(self):
+        """
+        获取实例使用时间（根据 mode 返回对应的 usetime）
+        
+        Returns:
+            float: prompt 或 token 实例的使用时间
+        """
+        if not hasattr(self.applications[0], 'scaling_manager') or \
+           self.applications[0].scaling_manager is None:
+            return 0.0
+        
+        scaling_manager = self.applications[0].scaling_manager
+        
+        if self.mode == "prompt":
+            return scaling_manager.calculate_prompt_instance_time_since_last()
+        elif self.mode == "token":
+            return scaling_manager.calculate_token_instance_time_since_last()
+        else:  # joint mode
+            # 对于 joint 模式，返回两者的总和
+            return (scaling_manager.calculate_prompt_instance_time_since_last() +
+                    scaling_manager.calculate_token_instance_time_since_last())
+
     @property
     def scheduler(self):
         return self.applications[0].scheduler
@@ -622,16 +711,17 @@ class RLStateCollector:
     def feature_dim(self):
         """
         根据模式返回不同的单步特征维度：
-        - joint: 25 (rps + prompt_rate + token_rate + prompt_len + output_len + 
-                     p_queue + d_queue + wait_time + n_p + n_t + util_p + util_d + 
+        - joint: 27 (rps + prompt_rate + token_rate + prompt_len + output_len + 
+                     p_queue + d_queue + wait_time + 2*instance_count + util_p + util_d + 
                      util_mem + 3*ttft_rate + 3*tbt_rate + 4*scaling + 
-                     2*none_count + last_action)
-        - prompt: 14 (rps + prompt_rate + prompt_len + p_queue + wait_time + 
-                      n_p + util_p + util_mem + 3*ttft_rate + 2*scaling_prompt + 
-                      prompt_none_count + last_action)
-        - token: 14 (rps + token_rate + output_len + d_queue + wait_time + 
-                     n_t + util_d + util_mem + 3*tbt_rate + 2*scaling_token + 
-                     token_none_count + last_action)
+                     2*none_count + 2*last_action + use_time)
+        - prompt: 17 (rps + prompt_rate + prompt_len + p_queue + wait_time + 
+                      2*instance_count + util_p + util_mem + 3*ttft_rate + 2*scaling_prompt + 
+                      2*none_count + 2*last_action + use_time)
+        - token: 17 (rps + token_rate + output_len + d_queue + wait_time + 
+                     2*instance_count + util_d + util_mem + 3*tbt_rate + 2*scaling_token + 
+                     2*none_count + 2*last_action + use_time)
+        注意：none_count、instance_count、last_action 和 use_time 都是共享特征，两个代理都同时包含 prompt 和 token 的值
         """
         cfg = self.feature_config
         dim = 0
@@ -659,10 +749,9 @@ class RLStateCollector:
             dim += 1
         
         # Resource
-        if cfg["needs_n_p"]:
-            dim += 1
-        if cfg["needs_n_t"]:
-            dim += 1
+        # 实例数量特征（类似 none_count，两个代理都同时包含两个值）
+        if cfg.get("needs_instance_count", False):
+            dim += 2  # n_p 和 n_t
         if cfg["needs_util_p"]:
             dim += 1
         if cfg["needs_util_d"]:
@@ -682,14 +771,17 @@ class RLStateCollector:
         if cfg["needs_scaling_token"]:
             dim += 2
         
-        # None count (瓶颈指标)
-        if cfg["needs_prompt_none_count"]:
-            dim += 1
-        if cfg["needs_token_none_count"]:
-            dim += 1
+        # None count (瓶颈指标，类似 last_action，两个代理都同时包含两个值)
+        if cfg.get("needs_none_count", False):
+            dim += 2  # prompt_none_count 和 token_none_count
         
         # Last action (根据配置决定是否包含)
+        # 两个代理都接收两个动作（prompt_action 和 token_action）
         if cfg.get("needs_last_action", False):
-            dim += 1
+            dim += 2  # prompt_action 和 token_action
+
+        # Use time (根据配置决定是否包含)
+        if cfg.get("needs_usetime", False):
+            dim += 1  # use_time
         
         return dim

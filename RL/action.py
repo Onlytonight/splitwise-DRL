@@ -64,13 +64,15 @@ class RLActionExecutor:
         :param alpha: PPO 输出的连续动作（-1,1）
         :param tag: "prompt" 或 "token"
         """
-        threshold = 0.3
-        if abs(alpha) < threshold:
-            delta = 0
-        else:
-            sign = 1 if alpha > 0 else -1
-            magnitude = (abs(alpha) - threshold) / (1 - threshold)
-            delta = int(round(sign * magnitude * self.scale_step_size))
+        # threshold = 0.3
+        # if abs(alpha) < threshold:
+        #     delta = 0
+        # else:
+        #     sign = 1 if alpha > 0 else -1
+        #     magnitude = (abs(alpha) - threshold) / (1 - threshold)
+        #     delta = int(round(sign * magnitude * self.scale_step_size))
+
+        delta = int(round(alpha * self.scale_step_size))
 
         logging.debug(f"RL Single Action[{tag}]: alpha={alpha} -> delta={delta}")
         self._handle_scaling(delta, tag)
