@@ -818,14 +818,14 @@ class TraceSACSimulator(Simulator):
         )
 
         # 初始化GPU设备（如果可用）
-        if ptu.device is None:
-            # 检测GPU是否可用，如果可用则使用GPU，否则使用CPU
-            use_gpu = torch.cuda.is_available()
-            ptu.set_gpu_mode(use_gpu, gpu_id=0)
-            if use_gpu:
-                logging.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
-            else:
-                logging.info("Using CPU (GPU not available)")
+        # if ptu.device is None:
+        #     # 检测GPU是否可用，如果可用则使用GPU，否则使用CPU
+        #     use_gpu = torch.cuda.is_available()
+        #     ptu.set_gpu_mode(use_gpu, gpu_id=0)
+        #     if use_gpu:
+        #         logging.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        #     else:
+        #         logging.info("Using CPU (GPU not available)")
         
         # 将网络移动到设备（rlkit 会自动处理，但明确指定更安全）
         self.policy.to(ptu.device)
