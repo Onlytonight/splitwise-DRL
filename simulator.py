@@ -9,6 +9,14 @@ from RL.state import RLStateCollector
 from RL.reward import RLRewardCalculator, RewardRecorder
 from RL.action import RLActionExecutor
 from RL.PPO import PPO
+import numpy as np
+import torch
+import rlkit.rlkit.torch.pytorch_util as ptu
+from rlkit.rlkit.data_management.simple_replay_buffer import SimpleReplayBuffer
+from rlkit.rlkit.torch.sac.policies import TanhGaussianPolicy, MakeDeterministic
+from rlkit.rlkit.torch.sac.sac import SACTrainer
+from rlkit.rlkit.torch.networks import ConcatMlp
+from rlkit.rlkit.torch.core import np_to_pytorch_batch
 # global simulator that drives the simulation
 # bad practice, but it works for now
 sim = None
@@ -292,18 +300,18 @@ class TraceRLSimulator(Simulator):
 
         # --- PPO Hyperparameters (从你的代码中提取并简化) ---
         self.has_continuous_action_space = True
-        self.action_std = 0.4  # 初始动作方差
+        self.action_std = 0.6  # 初始动作方差
         self.action_std_decay_rate = 0.05
         self.min_action_std = 0.1
-        self.action_std_decay_freq = 1000
+        self.action_std_decay_freq = 1000 #一万步学习完
 
         self.update_timestep = 10  # 每多少个决策步更新一次网络
         self.K_epochs = 40
         self.eps_clip = 0.2
         self.gamma = 0.99
-        self.lr_actor = 0.001
+        self.lr_actor = 0.0003
         self.lr_critic = 0.001
-        self.hidden_dim = 128  # 神经网络隐藏层维度
+        self.hidden_dim = 64  # 神经网络隐藏层维度
 
         # --- 初始化两个 PPO Agent ---
         prompt_state_dim = self.prompt_collector.feature_dim * self.prompt_collector.stack_size
@@ -620,7 +628,7 @@ class TraceRLSimulator(Simulator):
         
         # 获取当前工作目录（Hydra 切换后的目录）
         current_dir = os.getcwd()
-        logging.info(f"Saving results to directory: {current_dir}")
+        # logging.info(f"Saving results to directory: {current_dir}")
         
         self.router.save_results()
 
@@ -660,9 +668,472 @@ class TraceRLSimulator(Simulator):
             for application_id, result in sched_results.items():
                 sched_path = os.path.join(detailed_dir, f"{application_id}.csv")
                 utils.save_dict_as_csv(result, sched_path, append=not is_first_save)
-                logging.info(f"Scheduler results for {application_id} saved to: {sched_path}")
+                # logging.info(f"Scheduler results for {application_id} saved to: {sched_path}")
                 
             for application_id, result in alloc_results.items():
                 alloc_path = os.path.join(detailed_dir, f"{application_id}_alloc.csv")
                 utils.save_dict_as_csv(result, alloc_path, append=not is_first_save)
-                logging.info(f"Allocator results for {application_id} saved to: {alloc_path}")
+                # logging.info(f"Allocator results for {application_id} saved to: {alloc_path}")
+
+
+class TraceSACSimulator(Simulator):
+    """
+    使用 SAC 算法的强化学习模拟器
+    简化版本：只使用一个 RL 代理（joint 模式）
+    """
+    _first_save = True
+
+    def __init__(self,
+                 trace,
+                 cluster,
+                 applications,
+                 router,
+                 arbiter,
+                 end_time):
+        super().__init__(end_time)
+        self.trace = trace
+        self.cluster = cluster
+        self.applications = applications
+        self.router = router
+        self.arbiter = arbiter
+        self.decision_interval = 2  # 决策间隔（秒）
+        
+        # 特征配置
+        self.enabled_features = ["queue", "none_count", "instance_count"]
+        self.rl_config = {
+            "w_cost": 0.1,
+            "w_slo": 10,
+            "w_switch": 0.1,
+            "w_util": 0.2,
+            "action_scale_step": 5,
+            "action_mig_step": 3,
+            "min_instances_per_pool": 1,
+            "max_total_instances": 100,
+            "stack_size": 4
+        }
+        rl_config = self.rl_config
+        
+        # 状态堆叠大小
+        self.stack_size = self.rl_config.get("stack_size", 4)
+
+        # 使用 joint 模式的状态收集器（单一代理）
+        self.state_collector = RLStateCollector(
+            cluster=cluster,
+            router=router,
+            applications=applications,
+            stack_size=self.stack_size,
+            mode="joint",  # 使用 joint 模式，观察整个系统
+            enabled_features=self.enabled_features
+        )
+
+        # 奖励计算器（joint 模式）
+        self.reward_calculator = RLRewardCalculator(
+            config=rl_config,
+            max_instances=rl_config.get("max_total_instances", 100),
+            mode="joint",
+        )
+
+        # 获取应用和执行器
+        self.application = list(applications.values())[0]
+        self.action_executor = RLActionExecutor(
+            application=self.application,
+            config=rl_config,
+        )
+
+        # SAC 超参数
+        self.layer_size = 256  # 网络隐藏层大小
+        self.replay_buffer_size = int(1E6)
+        self.batch_size = 256
+        self.train_freq = 10  # 每多少个决策步训练一次
+        self.min_steps_before_training = 1000  # 开始训练前的最小步数
+
+        # 计算状态和动作维度
+        obs_dim = self.state_collector.feature_dim * self.stack_size
+        action_dim = 2  # 联合动作：[prompt_action, token_action]
+
+        logging.info(f"SAC State dim: {obs_dim}, Action dim: {action_dim}")
+
+        # 创建 SAC 网络
+        M = self.layer_size
+        self.qf1 = ConcatMlp(
+            input_size=obs_dim + action_dim,
+            output_size=1,
+            hidden_sizes=[M, M],
+        )
+        self.qf2 = ConcatMlp(
+            input_size=obs_dim + action_dim,
+            output_size=1,
+            hidden_sizes=[M, M],
+        )
+        self.target_qf1 = ConcatMlp(
+            input_size=obs_dim + action_dim,
+            output_size=1,
+            hidden_sizes=[M, M],
+        )
+        self.target_qf2 = ConcatMlp(
+            input_size=obs_dim + action_dim,
+            output_size=1,
+            hidden_sizes=[M, M],
+        )
+        self.policy = TanhGaussianPolicy(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            hidden_sizes=[M, M],
+        )
+
+        # 创建一个简单的对象来替代 env（仅用于 SACTrainer 初始化）
+        # SACTrainer 只需要 env.action_space.shape 来计算 target_entropy
+        class SimpleEnvProxy:
+            def __init__(self, action_dim):
+                class ActionSpace:
+                    def __init__(self, shape):
+                        self.shape = shape
+                self.action_space = ActionSpace((action_dim,))
+        
+        env_proxy = SimpleEnvProxy(action_dim)
+        
+        # 创建 SAC 训练器
+        self.trainer = SACTrainer(
+            env=env_proxy,
+            policy=self.policy,
+            qf1=self.qf1,
+            qf2=self.qf2,
+            target_qf1=self.target_qf1,
+            target_qf2=self.target_qf2,
+            discount=0.99,
+            soft_target_tau=5e-3,
+            target_update_period=1,
+            policy_lr=3E-4,
+            qf_lr=3E-4,
+            reward_scale=1,
+            use_automatic_entropy_tuning=True,
+        )
+
+        # 创建经验回放缓冲区（直接使用 SimpleReplayBuffer，不依赖 env）
+        self.replay_buffer = SimpleReplayBuffer(
+            max_replay_buffer_size=self.replay_buffer_size,
+            observation_dim=obs_dim,
+            action_dim=action_dim,
+            env_info_sizes={},
+        )
+
+        # 将网络移动到设备（rlkit 会自动处理，但明确指定更安全）
+        self.policy.to(ptu.device)
+        self.qf1.to(ptu.device)
+        self.qf2.to(ptu.device)
+        self.target_qf1.to(ptu.device)
+        self.target_qf2.to(ptu.device)
+
+        # 训练状态追踪
+        self.decision_step = 0
+        self.last_state = None
+        self.last_action = np.zeros(2, dtype=np.float32)
+        self.last_action_executed = True
+        self.finish_training = False
+        self.save_model_freq = 1000
+
+        # 用于累积每个 trace 的统计信息
+        self.trace_stats = {
+            'rewards': [],
+            'n_p': [],
+            'n_t': [],
+            'ttft_p99': [],
+            'tbt_p99': [],
+            'p_queue_len': [],
+            't_queue_len': [],
+            'avg_queue_time': [],
+            'avg_nth_token_overhead': [],
+            'actions': []
+        }
+
+        logging.info("TraceSACSimulator initialized with SAC agent")
+        self.load_trace()
+
+    def load_trace(self):
+        """加载 trace 请求作为到达事件"""
+        for request in self.trace.requests:
+            self.schedule(request.arrival_timestamp,
+                          lambda request=request: self.router.request_arrival(request))
+
+    def _print_trace_summary(self):
+        """输出当前 trace 的统计信息汇总"""
+        if len(self.trace_stats['rewards']) == 0:
+            return
+        
+        import numpy as np
+        
+        # 计算统计值
+        avg_reward = np.mean(self.trace_stats['rewards'])
+        avg_n_p = np.mean(self.trace_stats['n_p'])
+        avg_n_t = np.mean(self.trace_stats['n_t'])
+        avg_ttft_p99 = np.mean(self.trace_stats['ttft_p99'])
+        avg_tbt_p99 = np.mean(self.trace_stats['tbt_p99'])
+        avg_p_queue = np.mean(self.trace_stats['p_queue_len'])
+        avg_t_queue = np.mean(self.trace_stats['t_queue_len'])
+        avg_queue_time = np.mean(self.trace_stats['avg_queue_time'])
+        avg_nth_token_overhead = np.mean(self.trace_stats['avg_nth_token_overhead'])
+        
+        max_p_queue = np.max(self.trace_stats['p_queue_len'])
+        max_t_queue = np.max(self.trace_stats['t_queue_len'])
+        max_ttft_p99 = np.max(self.trace_stats['ttft_p99'])
+        max_tbt_p99 = np.max(self.trace_stats['tbt_p99'])
+        
+        logging.info(
+            # f"=== Trace Summary (Steps: {len(self.trace_stats['rewards'])}) ===\n"
+            f"Avg Reward: {avg_reward:.2f} | "
+            f"Avg n_p: {avg_n_p:.1f} | Avg n_t: {avg_n_t:.1f}"
+            f"Avg TTFT P99: {avg_ttft_p99:.2f} (Max: {max_ttft_p99:.2f}) | "
+            f"Avg TBT P99: {avg_tbt_p99:.2f} (Max: {max_tbt_p99:.2f})"
+            f"Avg P_Queue: {avg_p_queue:.1f} (Max: {max_p_queue:.1f}) | "
+            f"Avg T_Queue: {avg_t_queue:.1f} (Max: {max_t_queue:.1f})"
+            f"Avg Prompt_Time: {avg_queue_time:.3f} | "
+            f"Avg Two_Token_Time: {avg_nth_token_overhead:.3f}"
+        )
+
+    def reset_for_new_trace(self, new_trace, new_cluster=None, new_applications=None,
+                            new_router=None, new_arbiter=None):
+        """重置模拟器状态以加载新的 trace，但保持 SAC agent 和训练状态"""
+        if new_cluster is not None and new_applications is not None and \
+           new_router is not None and new_arbiter is not None:
+            self.cluster = new_cluster
+            self.applications = new_applications
+            self.router = new_router
+            self.arbiter = new_arbiter
+
+            from RL.state import RLStateCollector
+            self.state_collector = RLStateCollector(
+                cluster=new_cluster,
+                router=new_router,
+                applications=new_applications,
+                stack_size=self.stack_size,
+                mode="joint",
+                reset_shared_stats=True,
+                enabled_features=self.enabled_features
+            )
+
+            from RL.action import RLActionExecutor
+            self.application = list(new_applications.values())[0]
+            self.action_executor = RLActionExecutor(
+                application=self.application,
+                config=self.rl_config,
+            )
+
+        # 重置模拟器基础状态
+        self.time = 0
+        self.events = []
+        self.deleted_events = []
+        self.completed_events = []
+
+        self.trace = new_trace
+        self.load_trace()
+
+        from RL.state import RLStateCollector
+        RLStateCollector.clear_snapshot_cache()
+
+        applications_to_reset = new_applications if new_applications is not None else self.applications
+        for application in applications_to_reset.values():
+            if hasattr(application, 'scheduler') and application.scheduler is not None:
+                application.scheduler.reset()
+
+        # 输出上一个 trace 的统计信息（如果有数据）
+        if len(self.trace_stats['rewards']) > 0:
+            self._print_trace_summary()
+        
+        # 重置上一次的状态
+        self.last_state = None
+        self.last_action = np.zeros(2, dtype=np.float32)
+        self.last_action_executed = True
+        self.finish_training = False
+        
+        # 重置统计信息累积器
+        self.trace_stats = {
+            'rewards': [],
+            'n_p': [],
+            'n_t': [],
+            'ttft_p99': [],
+            'tbt_p99': [],
+            'p_queue_len': [],
+            't_queue_len': [],
+            'avg_queue_time': [],
+            'avg_nth_token_overhead': [],
+            'actions': []
+        }
+
+    def run(self):
+        # 启动模拟
+        self.schedule(0, self.cluster.run)
+        self.schedule(0, self.router.run)
+        self.schedule(0, self.arbiter.run)
+
+        # 启动决策循环
+        if self.decision_interval > 0:
+            # logging.info(f"Starting SAC decision cycle with interval {self.decision_interval}")
+            self.schedule(self.decision_interval, self.run_decision_cycle)
+
+        # 运行模拟
+        super().run()
+        self.logger.info(f"{self.time},end")
+        logging.info(f"TraceSACSimulator completed at {self.time}")
+
+        # 输出当前 trace 的统计信息
+        # if len(self.trace_stats['rewards']) > 0:
+        #     self._print_trace_summary()
+
+        self.save_results()
+
+    def run_decision_cycle(self):
+        """SAC Agent 的核心决策循环"""
+        current_time = self.time
+
+        # 1. 状态收集
+        state, raw_stats, instance_num, rps = self.state_collector.get_state_and_stats(
+            self.time, self.decision_interval,
+            last_prompt_action=self.last_action[0],
+            last_token_action=self.last_action[1]
+        )
+
+        # 2. 计算奖励（基于上一时刻的状态）
+        if self.last_state is not None:
+            # 将 applications 字典转换为列表格式（reward_calculator 期望列表）
+            applications_list = list(self.applications.values())
+            reward, reward_info = self.reward_calculator.calculate_reward(
+                self.cluster,
+                applications_list,
+                raw_stats,
+                instance_num,
+                action_executed=self.last_action_executed,
+                step=self.decision_step
+            )
+
+            # 将经验添加到回放缓冲区
+            self.replay_buffer.add_sample(
+                observation=self.last_state,
+                action=self.last_action,
+                reward=reward,
+                terminal=self.finish_training,
+                next_observation=state,
+                env_info={},
+            )
+
+            # 记录奖励
+            if not hasattr(self, 'reward_recorder'):
+                self.reward_recorder = RewardRecorder("reward_sac.csv")
+            self.reward_recorder.record_reward(self.decision_step, reward_info)
+
+            # 累积统计信息（不立即输出）
+            self.trace_stats['rewards'].append(reward)
+            self.trace_stats['n_p'].append(reward_info.get('n_p', 0))
+            self.trace_stats['n_t'].append(reward_info.get('n_t', 0))
+            self.trace_stats['ttft_p99'].append(reward_info.get('ttft_p99', 0))
+            self.trace_stats['tbt_p99'].append(reward_info.get('tbt_p99', 0))
+            self.trace_stats['p_queue_len'].append(reward_info.get('p_queue_len', 0))
+            self.trace_stats['t_queue_len'].append(reward_info.get('t_queue_len', 0))
+            self.trace_stats['avg_queue_time'].append(reward_info.get('avg_queue_time', 0))
+            self.trace_stats['avg_nth_token_overhead'].append(reward_info.get('avg_nth_token_overhead', 0))
+            self.trace_stats['actions'].append([self.last_action[0], self.last_action[1]])
+
+        if self.finish_training:
+            return
+
+        # 3. SAC 训练
+        if (self.decision_step >= self.min_steps_before_training and
+            self.decision_step % self.train_freq == 0 and
+            self.replay_buffer.num_steps_can_sample() >= self.batch_size):
+            
+            batch = self.replay_buffer.random_batch(self.batch_size)
+            # 在加入训练之前将numpy batch转换为tensor
+            batch = np_to_pytorch_batch(batch)
+            self.trainer.train_from_torch(batch)
+
+        # 4. 保存模型
+        if self.decision_step % self.save_model_freq == 0 and self.decision_step > 0:
+            cp_dir = "cp"
+            os.makedirs(cp_dir, exist_ok=True)
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_path = f"{cp_dir}/SAC_{self.decision_step}_{timestamp}.pth"
+            # 保存策略网络
+            torch.save({
+                'policy': self.policy.state_dict(),
+                'qf1': self.qf1.state_dict(),
+                'qf2': self.qf2.state_dict(),
+            }, model_path)
+            logging.info(f"SAC model saved to {model_path}")
+
+        # 5. SAC 策略推理并执行动作
+        # get_action 期望 numpy 数组，并且不接受 deterministic 参数
+        action, _ = self.policy.get_action(state)
+        action_np = action.flatten()  # 确保是一维数组
+
+        # 确保动作维度正确
+        if action_np.shape[0] != 2:
+            logging.warning(f"Action shape incorrect: {action_np.shape}, expected (2,)")
+            action_np = action_np[:2] if action_np.shape[0] > 2 else np.pad(action_np, (0, 2 - action_np.shape[0]), 'constant')
+
+        # 执行联合动作
+        action_executed = self.action_executor.execute(action_np)
+
+        # 更新状态
+        self.last_state = state
+        self.last_action = action_np
+        self.last_action_executed = action_executed
+        self.decision_step += 1
+
+        # 6. 清除快照缓存
+        from RL.state import RLStateCollector
+        RLStateCollector.clear_snapshot_cache()
+
+        # 7. 递归调度下一次决策
+        if current_time + self.decision_interval < self.end_time:
+            if rps == 0:
+                self.finish_training = True
+            self.schedule(self.decision_interval, self.run_decision_cycle)
+
+    def save_results(self, detailed=True):
+        """保存模拟结果"""
+        import os
+        from hydra.utils import get_original_cwd
+
+        current_dir = os.getcwd()
+        # logging.info(f"Saving results to directory: {current_dir}")
+
+        self.router.save_results()
+
+        sched_results = {}
+        alloc_results = {}
+        for application_id, application in self.applications.items():
+            allocator_results, scheduler_results = application.get_results()
+            alloc_results[application_id] = allocator_results
+            sched_results[application_id] = scheduler_results
+
+        # 汇总结果
+        summary_results = defaultdict(list)
+        for application_id, results_dict in sched_results.items():
+            summary_results["application_id"].append(application_id)
+            for key, values in results_dict.items():
+                summary = utils.get_statistics(values)
+                for metric, value in summary.items():
+                    summary_results[f"{key}_{metric}"].append(value)
+
+        # 判断是否是第一次保存
+        is_first_save = TraceSACSimulator._first_save
+        if is_first_save:
+            TraceSACSimulator._first_save = False
+
+        summary_path = os.path.join(current_dir, "summary.csv")
+        utils.save_dict_as_csv(summary_results, summary_path, append=not is_first_save)
+        # logging.info(f"Summary results saved to: {summary_path}")
+
+        if detailed:
+            detailed_dir = os.path.join(current_dir, "detailed")
+            os.makedirs(detailed_dir, exist_ok=True)
+
+            for application_id, result in sched_results.items():
+                sched_path = os.path.join(detailed_dir, f"{application_id}.csv")
+                utils.save_dict_as_csv(result, sched_path, append=not is_first_save)
+                # logging.info(f"Scheduler results for {application_id} saved to: {sched_path}")
+
+            for application_id, result in alloc_results.items():
+                alloc_path = os.path.join(detailed_dir, f"{application_id}_alloc.csv")
+                utils.save_dict_as_csv(result, alloc_path, append=not is_first_save)
+                # logging.info(f"Allocator results for {application_id} saved to: {alloc_path}")

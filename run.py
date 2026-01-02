@@ -9,7 +9,7 @@ from hydra.utils import instantiate
 from hydra.utils import get_original_cwd, to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
-from simulator import TraceSimulator, TraceRLSimulator
+from simulator import TraceSimulator, TraceRLSimulator,TraceSACSimulator
 from initialize import *
 
 
@@ -80,7 +80,7 @@ def run_simulation(cfg):
         print(f"First trace: {trace_paths[0]}")
         
         # 创建模拟器（只创建一次，后续重用）
-        sim = TraceRLSimulator(trace=first_trace,
+        sim = TraceSACSimulator(trace=first_trace,
                              cluster=cluster,
                              applications=applications,
                              router=router,
@@ -139,7 +139,7 @@ def run_simulation(cfg):
         print("trace is", trace)
         
         # 创建模拟器
-        sim = TraceRLSimulator(trace=trace,
+        sim = TraceSACSimulator(trace=trace,
                              cluster=cluster,
                              applications=applications,
                              router=router,

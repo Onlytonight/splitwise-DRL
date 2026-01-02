@@ -136,45 +136,17 @@ class RLRewardCalculator:
         #     cost_score = applications[0].scaling_manager.calculate_token_instance_time_since_last()
 
         reward = 0.0
-        # 奖励1.0
-        # if max_ratio > 1.0:
-        #     # === 🔴 危险区 ===
-        #     # 队列堆积导致预估延迟超标，立刻重罚！
-        #     # 这样 Agent 在队列刚开始堆积（t时刻）就会收到负反馈，不用等请求跑完。
-        #     reward = -self.BASE_SLO_PENALTY * ((max_ratio - 1.0) ** 2) - 2.0
-        #
-        # elif max_ratio > 0.8:
-        #     # === 🟡 缓冲区 ===
-        #     reward = (1.0 - cost_score) + 0.5
-        #
-        # else:
-        #     # === 🟢 安全区 ===
-        #     reward = 1.0 - cost_score
-
-        # 奖励2.0
-        # reward_stats = [prompt_rate, token_rate, p_queue, d_queue, n_p, n_t, avg_prompt_size, ttft_rate, tbt_rate, p_queue_len, d_queue_len]
-        # Agent 会为了让 penalty_slo 保持为 0 而不敢越线
-        # 在 penalty_slo 为 0 的前提下，它会尽可能减小 cost_term
-        queue_len = raw_stats[2] if self.mode == "prompt" else raw_stats[3]
+        if self.mode == "prompt":
+            queue_len = raw_stats[2]
+        elif self.mode == "token":
+            queue_len = raw_stats[3]
+        else:
+            queue_len = raw_stats[2] + raw_stats[3]
         # 从 raw_stats 中获取 usetime（由 state.py 的 get_usetime 函数计算）
         use_time = raw_stats[13]
-        reward = -3 * (queue_len/10000)
-        # - self.w_cost * use_time
+        reward = -3 * (queue_len/10000)- self.w_cost * cost_score
+
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)
-
-        # 奖励3.0
-        #   不对，现在的排队应该是越少越好，适当的
-        # 1. 悬崖：违约 (Ratio > 1.0)
-        #     reward =  -self.w_slo * (max_ratio ** 2)  # 重罚
-        # # 2. 甜头：黄金区间 (0.8 < Ratio <= 1.0)
-        # # 这就是让 Agent 勇敢的原因！只要保持在这里，不仅不罚，还给额外的正反馈
-        # elif max_ratio > 0.8:
-        #     reward = 2 - cost_score + max_ratio * 10
-        # # 3. 浪费：离悬崖太远 (Ratio <= 0.8) 即使没违约，但因为离得太远，没有“甜头”拿，只有省钱的微薄奖励
-        # else:
-        #     reward = - cost_score * ((1-max_ratio)*100)**2
-
-        # 奖励4.0
 
         # -------------------------------------------------------------
         # 4. 稳定性惩罚
@@ -185,6 +157,8 @@ class RLRewardCalculator:
             'step':step,
             'reward':reward,
             'cost_score': cost_score,
+            'n_p': n_p,
+            'n_t': n_t,
             'ttft_p50':raw_stats[7][0],
             'ttft_p90':raw_stats[7][1],
             'ttft_p99':raw_stats[7][2],

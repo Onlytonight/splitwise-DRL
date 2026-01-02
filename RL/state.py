@@ -484,7 +484,7 @@ class RLStateCollector:
             norm_vec.append(np.log1p(raw_vector[idx]) / np.log1p(200.0)) #最大实例数*决策间隔
             idx += 1
 
-        print(norm_vec)
+        # print(norm_vec)
 
         return np.array(norm_vec, dtype=np.float32)
 
