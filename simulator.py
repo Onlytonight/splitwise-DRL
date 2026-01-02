@@ -626,6 +626,12 @@ class TraceRLSimulator(Simulator):
         import os
         from hydra.utils import get_original_cwd
         
+        # 确保所有缓冲的奖励数据都被写入文件
+        if hasattr(self, 'prompt_reward_recorder') and self.prompt_reward_recorder is not None:
+            self.prompt_reward_recorder.close()
+        if hasattr(self, 'token_reward_recorder') and self.token_reward_recorder is not None:
+            self.token_reward_recorder.close()
+        
         # 获取当前工作目录（Hydra 切换后的目录）
         current_dir = os.getcwd()
         # logging.info(f"Saving results to directory: {current_dir}")
@@ -698,7 +704,7 @@ class TraceSACSimulator(Simulator):
         self.arbiter = arbiter
         self.decision_interval = 2  # 决策间隔（秒）
         
-        # 特征配置
+        # 特征配置 1、Δ 2、初始实例数 3、异构 4、reward cost权重大一点 5、显存利用率 6、reward tps/实例数 大概需要多少实例
         self.enabled_features = ["queue", "none_count", "instance_count"]
         self.rl_config = {
             "w_cost": 0.1,
@@ -1103,6 +1109,10 @@ class TraceSACSimulator(Simulator):
         """保存模拟结果"""
         import os
         from hydra.utils import get_original_cwd
+
+        # 确保所有缓冲的奖励数据都被写入文件
+        if hasattr(self, 'reward_recorder') and self.reward_recorder is not None:
+            self.reward_recorder.close()
 
         current_dir = os.getcwd()
         # logging.info(f"Saving results to directory: {current_dir}")

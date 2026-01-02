@@ -316,10 +316,11 @@ class RLRewardCalculator:
 
 class RewardRecorder:
 
-
-    def __init__(self, filename="reward.csv", clear_file=True):
+    def __init__(self, filename="reward.csv", clear_file=True, buffer_size=10):
         self.filename = filename
         self.fieldnames = None  # 将在第一次调用record_reward时初始化
+        self.buffer_size = buffer_size  # 缓冲区大小
+        self.write_buffer = []  # 写入缓冲区
         self._initialize_csv(clear_file)
 
     def _initialize_csv(self, clear_file=True):
@@ -336,15 +337,46 @@ class RewardRecorder:
         :param step: Current decision step
         :param info_dict: Dictionary containing reward components from RLRewardCalculator
         """
+        try:
+            # 如果是第一次调用，初始化fieldnames并写入表头
+            if self.fieldnames is None:
+                self.fieldnames = list(info_dict.keys())
+                try:
+                    with open(self.filename, 'w', newline='') as csvfile:
+                        writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
+                        writer.writeheader()
+                        csvfile.flush()
+                except (IOError, OSError) as e:
+                    logging.error(f"Failed to write header to {self.filename}: {e}")
+                    return
 
-        # 如果是第一次调用，初始化fieldnames并写入表头
-        if self.fieldnames is None:
-            self.fieldnames = list(info_dict.keys())
-            with open(self.filename, 'w', newline='') as csvfile:
+            # 将数据添加到缓冲区
+            self.write_buffer.append(info_dict)
+            
+            # 当缓冲区达到指定大小时，批量写入文件
+            if len(self.write_buffer) >= self.buffer_size:
+                self._flush_buffer()
+        except Exception as e:
+            logging.error(f"Unexpected error in record_reward: {e}")
+    
+    def _flush_buffer(self):
+        """将缓冲区中的数据写入文件"""
+        if not self.write_buffer:
+            return
+        
+        try:
+            with open(self.filename, 'a', newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
-                writer.writeheader()
-
-        # 使用追加模式写入数据
-        with open(self.filename, 'a', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
-            writer.writerow(info_dict)
+                for row in self.write_buffer:
+                    writer.writerow(row)
+                csvfile.flush()
+            self.write_buffer.clear()
+        except (IOError, OSError) as e:
+            logging.error(f"Failed to flush buffer to {self.filename}: {e}")
+            # 清空缓冲区以避免重复写入
+            self.write_buffer.clear()
+    
+    def close(self):
+        """关闭记录器，确保所有缓冲数据都被写入"""
+        if self.write_buffer:
+            self._flush_buffer()
