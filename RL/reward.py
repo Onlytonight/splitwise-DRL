@@ -2,6 +2,7 @@ import numpy as np
 import logging
 import csv
 import os
+import time
 from collections import defaultdict
 import pandas as pd
 
@@ -116,10 +117,6 @@ class RLRewardCalculator:
         else:
             max_ratio = max(ratio_ttft, ratio_tbt)
 
-        # -------------------------------------------------------------
-        # 3. 计算奖励 (逻辑与之前相同，但输入变了)
-        # -------------------------------------------------------------
-
         # 计算成本分数
         n_p, n_t = raw_stats[4:6]
         if self.mode == "prompt":
@@ -128,6 +125,12 @@ class RLRewardCalculator:
             cost_score = n_t
         else:
             cost_score = (n_p + n_t)
+
+        # -------------------------------------------------------------
+        # 3. 计算奖励 (逻辑与之前相同，但输入变了)
+        # -------------------------------------------------------------
+
+
         # 最大实例数*interval step
         # 计算 prompt 实例的总使用时间（自上次调用以来）
         # if self.mode == "prompt":
@@ -144,8 +147,18 @@ class RLRewardCalculator:
             queue_len = raw_stats[2] + raw_stats[3]
         # 从 raw_stats 中获取 usetime（由 state.py 的 get_usetime 函数计算）
         use_time = raw_stats[13]
-        reward = -3 * (queue_len/10000)- self.w_cost * cost_score
 
+        reward_tag = True
+        TTFT_SLO = [2, 3, 6]
+        TBT_SLO = [1.25, 1.5, 5]
+        for i in range(len(TTFT_SLO)):
+            if raw_stats[7][i] > TTFT_SLO[i] or raw_stats[8][i] > TBT_SLO[i]:
+                reward_tag = False
+
+        if reward_tag:
+            reward += 100.0
+        reward = - self.w_cost * cost_score
+        # -3 * (queue_len/10000)
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)
 
         # -------------------------------------------------------------
@@ -173,6 +186,7 @@ class RLRewardCalculator:
             'avg_queue_time': raw_stats[11],
             'avg_nth_token_overhead': raw_stats[12]
         }
+        # print(reward)
         return reward,info
 
     def calculate_reward_(self, cluster, applications, interval_stats, instance_num, action_executed=True):
@@ -316,10 +330,10 @@ class RLRewardCalculator:
 
 class RewardRecorder:
 
-    def __init__(self, filename="reward.csv", clear_file=True, buffer_size=10):
+    def __init__(self, filename="reward.csv", clear_file=True, buffer_size=100):
         self.filename = filename
         self.fieldnames = None  # 将在第一次调用record_reward时初始化
-        self.buffer_size = buffer_size  # 缓冲区大小
+        self.buffer_size = buffer_size  # 缓冲区大小（增加到100以减少文件打开频率）
         self.write_buffer = []  # 写入缓冲区
         self._initialize_csv(clear_file)
 
@@ -359,22 +373,33 @@ class RewardRecorder:
         except Exception as e:
             logging.error(f"Unexpected error in record_reward: {e}")
     
-    def _flush_buffer(self):
-        """将缓冲区中的数据写入文件"""
+    def _flush_buffer(self, max_retries=3, retry_delay=0.1):
+        """将缓冲区中的数据写入文件，带重试机制"""
         if not self.write_buffer:
             return
         
-        try:
-            with open(self.filename, 'a', newline='') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
-                for row in self.write_buffer:
-                    writer.writerow(row)
-                csvfile.flush()
-            self.write_buffer.clear()
-        except (IOError, OSError) as e:
-            logging.error(f"Failed to flush buffer to {self.filename}: {e}")
-            # 清空缓冲区以避免重复写入
-            self.write_buffer.clear()
+        for attempt in range(max_retries):
+            try:
+                with open(self.filename, 'a', newline='') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
+                    for row in self.write_buffer:
+                        writer.writerow(row)
+                    csvfile.flush()
+                self.write_buffer.clear()
+                return  # 成功写入，退出
+            except (IOError, OSError) as e:
+                if attempt < max_retries - 1:
+                    # 等待后重试
+                    time.sleep(retry_delay * (attempt + 1))  # 指数退避
+                    logging.warning(f"Retry {attempt + 1}/{max_retries} flushing buffer to {self.filename}")
+                else:
+                    # 最后一次尝试失败，记录错误但不清空缓冲区（保留数据）
+                    logging.error(f"Failed to flush buffer to {self.filename} after {max_retries} attempts: {e}")
+                    # 不清空缓冲区，保留数据以便下次尝试
+                    # 但如果缓冲区太大，清空一部分以避免内存问题
+                    if len(self.write_buffer) > self.buffer_size * 2:
+                        logging.warning(f"Buffer too large ({len(self.write_buffer)}), clearing half")
+                        self.write_buffer = self.write_buffer[len(self.write_buffer)//2:]
     
     def close(self):
         """关闭记录器，确保所有缓冲数据都被写入"""

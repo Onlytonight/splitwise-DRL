@@ -34,6 +34,7 @@ class RLStateCollector:
         "needs_none_count": True,  # None计数特征（包含 prompt_none_count 和 token_none_count）
         "needs_instance_count": True,  # 实例数量特征（包含 n_p 和 n_t）
         "needs_usetime": True,  # 实例使用时间特征
+        "needs_timestamp": True,  # 时间戳特征
     }
     
     # 共享特征的名称映射，用于通过 enabled_features 控制
@@ -44,7 +45,8 @@ class RLStateCollector:
         "action": "needs_last_action",  # 或 "last_action"
         "none_count": "needs_none_count",  # None计数特征
         "instance_count": "needs_instance_count",  # 实例数量特征
-        "use_time": "needs_usetime", 
+        "use_time": "needs_usetime",
+        "timestamp": "needs_timestamp",  # 时间戳特征
     }
 
     _FEATURE_PAIRS = {
@@ -77,6 +79,7 @@ class RLStateCollector:
         "needs_last_action": True,
         "needs_none_count": True,
         "needs_usetime": True,
+        "needs_timestamp": True,
     }
     
     @classmethod
@@ -174,7 +177,7 @@ class RLStateCollector:
         :param enabled_features: 可选，要启用的特征名称列表
                                  如果为 None，则使用默认配置（所有特征都启用）
                                  可用的特征对名称：rate, length, queue, utilization, slo, scaling
-                                 可用的共享特征名称：rps, wait_time, util_mem, action (或 last_action), none_count, instance_count, usetime (或 use_time)
+                                 可用的共享特征名称：rps, wait_time, util_mem, action (或 last_action), none_count, instance_count, usetime (或 use_time), timestamp
                                  注意：none_count 和 instance_count 共享特征分别包含 prompt/token 的两个值，两个代理都会同时包含这两个值
         """
         assert mode in ("joint", "prompt", "token")
@@ -347,6 +350,16 @@ class RLStateCollector:
         if cfg.get("needs_usetime", False):
             snapshot.append(use_time)
 
+        # --- I. 时间戳特征 ---
+        # 根据配置决定是否包含
+        # 使用归一化的时间戳（相对于最大时间，默认86400秒=1天）
+        if cfg.get("needs_timestamp", False):
+            # 归一化时间戳到 [0, 1] 范围
+            # 使用 tanh 归一化，可以处理任意大小的时间戳
+            MAX_TIME = 60.0  # 默认最大时间：1天（86400秒）
+            normalized_timestamp = np.tanh(current_time / MAX_TIME)
+            snapshot.append(normalized_timestamp)
+
         # --- 更新累积状态供下次使用 ---
         # 无论是否需要这些特征，都需要更新统计值，因为可能被其他 collector 使用
         self.last_stats.update({
@@ -482,6 +495,13 @@ class RLStateCollector:
         if cfg.get("needs_usetime", False):
             # 使用 log1p 归一化，假设最大使用时间为 1000（可以根据实际情况调整）
             norm_vec.append(np.log1p(raw_vector[idx]) / np.log1p(200.0)) #最大实例数*决策间隔
+            idx += 1
+
+        # Timestamp feature (时间戳特征，已经在 _collect_snapshot 中归一化)
+        # 根据配置决定是否包含
+        if cfg.get("needs_timestamp", False):
+            # 时间戳已经在 _collect_snapshot 中使用 tanh 归一化，直接使用即可
+            norm_vec.append(raw_vector[idx])
             idx += 1
 
         # print(norm_vec)
@@ -711,17 +731,17 @@ class RLStateCollector:
     def feature_dim(self):
         """
         根据模式返回不同的单步特征维度：
-        - joint: 27 (rps + prompt_rate + token_rate + prompt_len + output_len + 
+        - joint: 28 (rps + prompt_rate + token_rate + prompt_len + output_len + 
                      p_queue + d_queue + wait_time + 2*instance_count + util_p + util_d + 
                      util_mem + 3*ttft_rate + 3*tbt_rate + 4*scaling + 
-                     2*none_count + 2*last_action + use_time)
-        - prompt: 17 (rps + prompt_rate + prompt_len + p_queue + wait_time + 
+                     2*none_count + 2*last_action + use_time + timestamp)
+        - prompt: 18 (rps + prompt_rate + prompt_len + p_queue + wait_time + 
                       2*instance_count + util_p + util_mem + 3*ttft_rate + 2*scaling_prompt + 
-                      2*none_count + 2*last_action + use_time)
-        - token: 17 (rps + token_rate + output_len + d_queue + wait_time + 
+                      2*none_count + 2*last_action + use_time + timestamp)
+        - token: 18 (rps + token_rate + output_len + d_queue + wait_time + 
                      2*instance_count + util_d + util_mem + 3*tbt_rate + 2*scaling_token + 
-                     2*none_count + 2*last_action + use_time)
-        注意：none_count、instance_count、last_action 和 use_time 都是共享特征，两个代理都同时包含 prompt 和 token 的值
+                     2*none_count + 2*last_action + use_time + timestamp)
+        注意：none_count、instance_count、last_action、use_time 和 timestamp 都是共享特征，两个代理都同时包含 prompt 和 token 的值
         """
         cfg = self.feature_config
         dim = 0
@@ -783,5 +803,9 @@ class RLStateCollector:
         # Use time (根据配置决定是否包含)
         if cfg.get("needs_usetime", False):
             dim += 1  # use_time
+
+        # Timestamp (根据配置决定是否包含)
+        if cfg.get("needs_timestamp", False):
+            dim += 1  # timestamp
         
         return dim

@@ -357,6 +357,10 @@ class TraceRLSimulator(Simulator):
         self.save_model_freq = 1000  # 保存模型频率
         self.finish_training = False
 
+        # 在初始化时创建 RewardRecorder 实例，整个训练过程复用
+        self.prompt_reward_recorder = RewardRecorder("reward_prompt.csv", clear_file=True, buffer_size=100)
+        self.token_reward_recorder = RewardRecorder("reward_token.csv", clear_file=True, buffer_size=100)
+
         logging.info("TraceRLSimulator initialized with dual RL agents")
         self.load_trace()
 
@@ -534,12 +538,7 @@ class TraceRLSimulator(Simulator):
             self.token_agent.buffer.rewards.append(token_reward)
             self.token_agent.buffer.is_terminals.append(False)
 
-            # 记录奖励到 CSV（按 agent 区分）
-            if not hasattr(self, 'prompt_reward_recorder'):
-                self.prompt_reward_recorder = RewardRecorder("reward_prompt.csv")
-            if not hasattr(self, 'token_reward_recorder'):
-                self.token_reward_recorder = RewardRecorder("reward_token.csv")
-
+            # 记录奖励到 CSV（使用在 __init__ 中创建的实例）
             self.prompt_reward_recorder.record_reward(self.decision_step, prompt_info)
             self.token_reward_recorder.record_reward(self.decision_step, token_info)
 
@@ -703,11 +702,10 @@ class TraceSACSimulator(Simulator):
         self.router = router
         self.arbiter = arbiter
         self.decision_interval = 2  # 决策间隔（秒）
-        
-        # 特征配置 1、Δ 2、初始实例数 3、异构 4、reward cost权重大一点 5、显存利用率 6、reward tps/实例数 大概需要多少实例
-        self.enabled_features = ["queue", "none_count", "instance_count"]
+        #
+        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp']
         self.rl_config = {
-            "w_cost": 0.1,
+            "w_cost": 0.5,
             "w_slo": 10,
             "w_switch": 0.1,
             "w_util": 0.2,
@@ -847,6 +845,9 @@ class TraceSACSimulator(Simulator):
         self.last_action_executed = True
         self.finish_training = False
         self.save_model_freq = 1000
+
+        # 在初始化时创建 RewardRecorder 实例，整个训练过程复用
+        self.reward_recorder = RewardRecorder("reward_sac.csv", clear_file=True, buffer_size=100)
 
         # 用于累积每个 trace 的统计信息
         self.trace_stats = {
@@ -1031,9 +1032,7 @@ class TraceSACSimulator(Simulator):
                 env_info={},
             )
 
-            # 记录奖励
-            if not hasattr(self, 'reward_recorder'):
-                self.reward_recorder = RewardRecorder("reward_sac.csv")
+            # 记录奖励（使用在 __init__ 中创建的实例）
             self.reward_recorder.record_reward(self.decision_step, reward_info)
 
             # 累积统计信息（不立即输出）

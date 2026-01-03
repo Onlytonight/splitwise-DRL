@@ -190,11 +190,26 @@ class Scheduler(ABC):
         Saves start and end timestamps for all request nodes.
         Helpful for Gantt charts.
         """
-        node_metrics = []
-        for request in self.completed_queue:
-            node_metrics.extend(request.get_all_node_metrics())
-        node_metrics_df = pd.DataFrame(node_metrics)
-        node_metrics_df.to_csv("request_nodes.csv", index=False)
+        try:
+            node_metrics = []
+            for request in self.completed_queue:
+                node_metrics.extend(request.get_all_node_metrics())
+            node_metrics_df = pd.DataFrame(node_metrics)
+            
+            # 添加重试机制处理文件句柄耗尽的情况
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    node_metrics_df.to_csv("request_nodes.csv", index=False)
+                    break  # 成功写入，退出循环
+                except (IOError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.1 * (attempt + 1))  # 指数退避
+                        logging.warning(f"Retry {attempt + 1}/{max_retries} saving request_nodes.csv")
+                    else:
+                        logging.error(f"Failed to save request_nodes.csv after {max_retries} attempts: {e}")
+        except Exception as e:
+            logging.error(f"Error in save_all_request_metrics: {e}")
 
     def get_results(self):
         """
