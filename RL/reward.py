@@ -6,7 +6,6 @@ import time
 from collections import defaultdict
 import pandas as pd
 
-from plots.curve import reward
 
 
 class RLRewardCalculator:
