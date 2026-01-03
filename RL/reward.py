@@ -154,6 +154,7 @@ class RLRewardCalculator:
         for i in range(len(TTFT_SLO)):
             if raw_stats[7][i] > TTFT_SLO[i] or raw_stats[8][i] > TBT_SLO[i]:
                 reward_tag = False
+                reward += 10
 
         if reward_tag:
             reward += 100.0
