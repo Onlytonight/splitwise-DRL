@@ -154,19 +154,23 @@ class RLRewardCalculator:
         reward_tag = True
         TTFT_SLO = [2, 3, 6]
         TBT_SLO = [1.25, 1.5, 5]
+        # TTFT/SL0 > 1 用线性惩罚，否则给大正奖励
         for i in range(len(TTFT_SLO)):
             if raw_stats[7][i] > TTFT_SLO[i]:
+                slo_reward += max(0, 20 - 5 * (raw_stats[7][i] - TTFT_SLO[i]) / TTFT_SLO[i])  # 线性扣分，下限0
                 reward_tag = False
             else:
-                slo_reward += 10
+                slo_reward += 30  # 大正奖励
             if raw_stats[8][i] > TBT_SLO[i]:
+                slo_reward += max(0, 10 - 5 * (raw_stats[8][i] - TBT_SLO[i]) / TBT_SLO[i])  # 线性扣分，下限0
                 reward_tag = False
             else:
-                slo_reward += 10
+                slo_reward += 20  # 大正奖励
 
         if reward_tag:
             slo_reward += 60.0
         reward = self.w_slo * slo_reward - self.w_cost * cost_score
+        # print("reward:",reward)
         # -3 * (queue_len/10000)
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)
 
