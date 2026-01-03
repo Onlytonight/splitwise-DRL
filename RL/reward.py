@@ -6,6 +6,9 @@ import time
 from collections import defaultdict
 import pandas as pd
 
+from plots.curve import reward
+
+
 class RLRewardCalculator:
     def __init__(self,
                  config,
@@ -24,7 +27,7 @@ class RLRewardCalculator:
         # 1. 权重参数 (需要通过超参数搜索微调)
         # 建议初始值: w_cost=0.5, w_slo=2.0, w_switch=0.1, w_util=0.2
         self.w_cost = config.get("w_cost", 0.5)
-        self.w_slo = config.get("w_slo", 2.0)
+        self.w_slo = config.get("w_slo", 0.5)
         self.w_switch = config.get("w_switch", 0.1)
         self.w_util = config.get("w_util", 0.2)
 
@@ -138,7 +141,7 @@ class RLRewardCalculator:
         # elif self.mode == "token":
         #     cost_score = applications[0].scaling_manager.calculate_token_instance_time_since_last()
 
-        reward = 0.0
+
         if self.mode == "prompt":
             queue_len = raw_stats[2]
         elif self.mode == "token":
@@ -148,6 +151,7 @@ class RLRewardCalculator:
         # 从 raw_stats 中获取 usetime（由 state.py 的 get_usetime 函数计算）
         use_time = raw_stats[13]
 
+        slo_reward = 0.0
         reward_tag = True
         TTFT_SLO = [2, 3, 6]
         TBT_SLO = [1.25, 1.5, 5]
@@ -155,15 +159,15 @@ class RLRewardCalculator:
             if raw_stats[7][i] > TTFT_SLO[i]:
                 reward_tag = False
             else:
-                reward += 10
+                slo_reward += 10
             if raw_stats[8][i] > TBT_SLO[i]:
                 reward_tag = False
             else:
-                reward += 10
+                slo_reward += 10
 
         if reward_tag:
-            reward += 100.0
-        reward = - self.w_cost * cost_score
+            slo_reward += 60.0
+        reward = self.w_slo * slo_reward - self.w_cost * cost_score
         # -3 * (queue_len/10000)
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)
 
