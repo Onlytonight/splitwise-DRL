@@ -705,8 +705,8 @@ class TraceSACSimulator(Simulator):
         #
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp']
         self.rl_config = {
-            "w_cost": 0.5,
-            "w_slo": 0.5,
+            "w_cost": 0.2,
+            "w_slo": 0.8,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
@@ -748,8 +748,8 @@ class TraceSACSimulator(Simulator):
         self.layer_size = 256  # 网络隐藏层大小
         self.replay_buffer_size = int(1E6)
         self.batch_size = 256
-        self.train_freq = 10  # 每多少个决策步训练一次
-        self.min_steps_before_training = 1000  # 开始训练前的最小步数
+        self.train_freq = 30  # 每多少个决策步训练一次
+        self.min_steps_before_training = 100  # 开始训练前的最小步数
 
         # 计算状态和动作维度
         obs_dim = self.state_collector.feature_dim * self.stack_size

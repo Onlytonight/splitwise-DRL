@@ -310,6 +310,7 @@ class Scheduler(ABC):
             if request_data:
                 # 创建DataFrame并使用PerfModel进行归一化
                 request_df = pd.DataFrame(request_data)
+                # TODO 异构时需要添加按照具体实例的模型计算逻辑
                 normalized_df = self.perf_model.add_baseline_perf(request_df,model="bloom-176b",hardware="h100-80gb",tensor_parallel=8)
 
                 # 计算归一化后的TTFT和TBT
