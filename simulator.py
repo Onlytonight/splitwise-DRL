@@ -721,8 +721,8 @@ class TraceSACSimulator(Simulator):
 
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta']
         self.rl_config = {
-            "w_cost": 0.6,
-            "w_slo": 0.4,
+            "w_cost": 0.7,
+            "w_slo": 0.3,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
@@ -734,7 +734,7 @@ class TraceSACSimulator(Simulator):
         }
 
         # SAC 超参数
-        self.layer_size = 256  # 网络隐藏层大小
+        self.layer_size = 128  # 网络隐藏层大小
         self.replay_buffer_size = int(1E6)
         self.batch_size = 256
         self.train_freq = 30  # 每多少个决策步训练一次
