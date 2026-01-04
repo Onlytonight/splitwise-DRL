@@ -128,18 +128,6 @@ class RLRewardCalculator:
         else:
             cost_score = (n_p + n_t)
 
-        # -------------------------------------------------------------
-        # 3. 计算奖励 (逻辑与之前相同，但输入变了)
-        # -------------------------------------------------------------
-
-
-        # 最大实例数*interval step
-        # 计算 prompt 实例的总使用时间（自上次调用以来）
-        # if self.mode == "prompt":
-        #     cost_score = applications[0].scaling_manager.calculate_prompt_instance_time_since_last()
-        # elif self.mode == "token":
-        #     cost_score = applications[0].scaling_manager.calculate_token_instance_time_since_last()
-
 
         if self.mode == "prompt":
             queue_len = raw_stats[2]
@@ -150,25 +138,7 @@ class RLRewardCalculator:
         # 从 raw_stats 中获取 usetime（由 state.py 的 get_usetime 函数计算）
         use_time = raw_stats[13]
 
-        slo_reward = 0.0
-        reward_tag = True
-        TTFT_SLO = [2, 3, 6]
-        TBT_SLO = [1.25, 1.5, 5]
-        # TTFT/SL0 > 1 用线性惩罚，否则给大正奖励
-        for i in range(len(TTFT_SLO)):
-            if raw_stats[7][i] > TTFT_SLO[i]:
-                slo_reward += max(0, 20 - 5 * (raw_stats[7][i] - TTFT_SLO[i]) / TTFT_SLO[i])  # 线性扣分，下限0
-                reward_tag = False
-            else:
-                slo_reward += 30  # 大正奖励
-            if raw_stats[8][i] > TBT_SLO[i]:
-                slo_reward += max(0, 10 - 5 * (raw_stats[8][i] - TBT_SLO[i]) / TBT_SLO[i])  # 线性扣分，下限0
-                reward_tag = False
-            else:
-                slo_reward += 20  # 大正奖励
-
-        if reward_tag:
-            slo_reward += 60.0
+        slo_reward = self.get_slo_reward(raw_stats[7],raw_stats[8])
         reward = self.w_slo * slo_reward - self.w_cost * cost_score
         # print("reward:",reward)
         # -3 * (queue_len/10000)
@@ -340,6 +310,29 @@ class RLRewardCalculator:
     def reset(self):
         """重置内部状态 (每个 Episode 开始时调用)"""
         self.last_instances = {'p': 0, 't': 0}
+
+    def get_slo_reward(self,ttft,tbt):
+        slo_reward = 0.0
+        reward_tag = True
+        TTFT_SLO = [2, 3, 6]
+        TBT_SLO = [1.25, 1.5, 5]
+        # TTFT/SL0 > 1 用线性惩罚，否则给大正奖励
+        for i in range(len(TTFT_SLO)):
+            if ttft[i] > TTFT_SLO[i]:
+                slo_reward += max(0, 20 - 5 * (ttft[i] - TTFT_SLO[i]) / TTFT_SLO[i])  # 线性扣分，下限0
+                reward_tag = False
+            else:
+                slo_reward += 30  # 大正奖励
+            if tbt[i] > TBT_SLO[i]:
+                slo_reward += max(0, 10 - 5 * (tbt[i] - TBT_SLO[i]) / TBT_SLO[i])  # 线性扣分，下限0
+                reward_tag = False
+            else:
+                slo_reward += 20  # 大正奖励
+
+        if reward_tag:
+            slo_reward += 60.0
+        
+        return slo_reward
 
 class RewardRecorder:
 

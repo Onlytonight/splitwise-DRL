@@ -102,6 +102,15 @@ def run_simulation(cfg):
         for epoch, trace_path in enumerate(trace_paths[1:], start=2):
             logging.info(f"Running trace {epoch}/{len(trace_paths)}: {trace_path}")
             
+            # 在开始新 trace 之前，确保上一个 trace 的所有文件流都已关闭（双重保险）
+            # reset_for_new_trace 中也会关闭，但这里确保即使 run() 异常退出也能关闭
+            if hasattr(sim, 'reward_recorder') and sim.reward_recorder is not None:
+                sim.reward_recorder.close()
+            if hasattr(sim, 'prompt_reward_recorder') and sim.prompt_reward_recorder is not None:
+                sim.prompt_reward_recorder.close()
+            if hasattr(sim, 'token_reward_recorder') and sim.token_reward_recorder is not None:
+                sim.token_reward_recorder.close()
+            
             # 加载新的 trace（如果路径相同，可以重用同一个 trace 对象）
             new_trace = init_trace_from_path(trace_path)
             
@@ -149,6 +158,15 @@ def run_simulation(cfg):
         # 如果设置了 trace_epochs > 1，循环使用同一个 trace
         for epoch in range(1, trace_epochs + 1):
             logging.info(f"Running trace epoch {epoch}/{trace_epochs}")
+            
+            # 在开始新 epoch 之前，确保上一个 epoch 的所有文件流都已关闭（双重保险）
+            if epoch > 1:
+                if hasattr(sim, 'reward_recorder') and sim.reward_recorder is not None:
+                    sim.reward_recorder.close()
+                if hasattr(sim, 'prompt_reward_recorder') and sim.prompt_reward_recorder is not None:
+                    sim.prompt_reward_recorder.close()
+                if hasattr(sim, 'token_reward_recorder') and sim.token_reward_recorder is not None:
+                    sim.token_reward_recorder.close()
             
             if epoch > 1:
                 # 重新初始化所有组件（彻底清理状态）

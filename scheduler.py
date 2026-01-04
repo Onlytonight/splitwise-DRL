@@ -65,6 +65,12 @@ class Scheduler(ABC):
         重置 scheduler 的状态，用于新的 trace 开始。
         清空队列和重置计数器，但保留实例列表和配置。
         """
+        # 关闭 logger 的所有 handlers，确保文件流被正确关闭
+        if hasattr(self, 'scheduler_logger') and self.scheduler_logger is not None:
+            for handler in self.scheduler_logger.handlers[:]:
+                handler.close()
+                self.scheduler_logger.removeHandler(handler)
+        
         # 清空请求队列
         self.pending_queue.clear()
         self.executing_queue.clear()

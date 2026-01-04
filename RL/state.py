@@ -15,7 +15,8 @@ class RLStateCollector:
         'arrival_count': 0,
         'completed_tokens': 0,
         'completed_prompts': 0,
-        'kv_transferred_bytes': 0
+        'kv_transferred_bytes': 0,
+        'last_rps': 0.0  # 上一次的 RPS 值（用于计算 RPS 差值）
     }
     # 为每个 mode 维护独立的缓存，避免 prompt 和 token collector 共享错误的缓存
     _snapshot_cache = {}  # 改为字典，key 为 mode
@@ -28,6 +29,7 @@ class RLStateCollector:
     # 修改这里会影响 prompt 和 token 两个模式
     _SHARED_FEATURES = {
         "needs_rps": True,
+        "needs_rps_delta": True,  # RPS 差值特征（当前 RPS - 上一次 RPS）
         "needs_wait_time": True,
         "needs_util_mem": True,
         "needs_last_action": True,  # 上一次动作特征
@@ -40,6 +42,7 @@ class RLStateCollector:
     # 共享特征的名称映射，用于通过 enabled_features 控制
     _SHARED_FEATURE_NAMES = {
         "rps": "needs_rps",
+        "rps_delta": "needs_rps_delta",  # RPS 差值特征
         "wait_time": "needs_wait_time",
         "util_mem": "needs_util_mem",
         "action": "needs_last_action",  # 或 "last_action"
@@ -61,6 +64,7 @@ class RLStateCollector:
     # Joint 模式的完整配置（所有特征都启用）
     _JOINT_CONFIG = {
         "needs_rps": True,
+        "needs_rps_delta": True,
         "needs_prompt_rate": True,
         "needs_token_rate": True,
         "needs_prompt_len": True,
@@ -166,7 +170,7 @@ class RLStateCollector:
         """
         return cls._build_feature_config(mode, enabled_features)
 
-    def __init__(self, cluster, router, applications, stack_size=4, mode: str = "joint", reset_shared_stats=False, enabled_features=None):
+    def __init__(self, cluster, router, applications, stack_size=4, mode: str = "joint", reset_shared_stats=False, enabled_features=None, debug_features=False):
         """
         :param cluster: 仿真器的 cluster 对象 (获取机器资源)
         :param router: 仿真器的 router 对象 (获取队列信息)
@@ -179,6 +183,7 @@ class RLStateCollector:
                                  可用的特征对名称：rate, length, queue, utilization, slo, scaling
                                  可用的共享特征名称：rps, wait_time, util_mem, action (或 last_action), none_count, instance_count, usetime (或 use_time), timestamp
                                  注意：none_count 和 instance_count 共享特征分别包含 prompt/token 的两个值，两个代理都会同时包含这两个值
+        :param debug_features: 是否输出归一化后的特征值和特征名称（用于调试）
         """
         assert mode in ("joint", "prompt", "token")
         
@@ -187,6 +192,7 @@ class RLStateCollector:
         self.applications = applications
         self.stack_size = stack_size
         self.mode = mode
+        self.debug_features = debug_features  # 调试开关
         
         # 根据模式构建特征配置（使用特征对机制，确保 prompt/token 同步）
         self.feature_config = self._get_feature_config(mode, enabled_features)
@@ -204,7 +210,8 @@ class RLStateCollector:
                 'arrival_count': 0,
                 'completed_tokens': 0,
                 'completed_prompts': 0,
-                'kv_transferred_bytes': 0
+                'kv_transferred_bytes': 0,
+                'last_rps': 0.0  # 上一次的 RPS 值（用于计算 RPS 差值）
             }
         else:
             self.last_stats = RLStateCollector._shared_last_stats
@@ -247,6 +254,13 @@ class RLStateCollector:
         rps = delta_arrivals / interval if interval > 0 else 0.0
         if cfg["needs_rps"]:
             snapshot.append(rps)
+        
+        # 2. RPS Delta (当前 RPS - 上一次 RPS)
+        rps_delta = rps - self.last_stats['last_rps']
+        if cfg.get("needs_rps_delta", False):
+            snapshot.append(rps_delta)
+        # 更新上一次的 RPS 值
+        self.last_stats['last_rps'] = rps
 
         # 2. Prompt/Token Generation Rate
         curr_tokens = self.router.total_complete_token
@@ -396,6 +410,7 @@ class RLStateCollector:
         由于 _collect_snapshot 已经按模式只收集需要的特征，这里直接按顺序归一化即可。
         """
         norm_vec = []
+        feature_names = []  # 用于存储特征名称（如果开启调试）
         idx = 0
         cfg = self.feature_config
         MAX_INSTANCES = 100
@@ -403,72 +418,116 @@ class RLStateCollector:
         # Workload features
         if cfg["needs_rps"]:
             norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)
+            if self.debug_features:
+                feature_names.append("rps")
+            idx += 1
+        if cfg.get("needs_rps_delta", False):
+            # RPS 差值使用类似的归一化方式（log1p），保留符号
+            rps_delta_val = raw_vector[idx]
+            norm_rps_delta = np.sign(rps_delta_val) * np.log1p(np.abs(rps_delta_val) + 1) / 10.0
+            norm_vec.append(norm_rps_delta)
+            if self.debug_features:
+                feature_names.append("rps_delta")
             idx += 1
         if cfg["needs_prompt_rate"]:
             norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)
+            if self.debug_features:
+                feature_names.append("prompt_rate")
             idx += 1
         if cfg["needs_token_rate"]:
             norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)
+            if self.debug_features:
+                feature_names.append("token_rate")
             idx += 1
 
         # Length features
         if cfg["needs_prompt_len"]:
             norm_vec.append(np.clip(raw_vector[idx] / 4096.0, 0, 1))
+            if self.debug_features:
+                feature_names.append("prompt_len")
             idx += 1
         if cfg["needs_output_len"]:
             norm_vec.append(np.clip(raw_vector[idx] / 2048.0, 0, 1))
+            if self.debug_features:
+                feature_names.append("output_len")
             idx += 1
 
         # Queue features
         if cfg["needs_p_queue"]:
             norm_vec.append(np.log1p(raw_vector[idx]+1) / 20.0)
-            # norm_vec.append(raw_vector[idx] / 10000.0)
+            if self.debug_features:
+                feature_names.append("p_queue")
             idx += 1
         if cfg["needs_d_queue"]:
             norm_vec.append(np.log1p(raw_vector[idx]+1) / 20.0)
-            # norm_vec.append(raw_vector[idx] / 10000.0)
+            if self.debug_features:
+                feature_names.append("d_queue")
             idx += 1
         if cfg["needs_wait_time"]:
             norm_vec.append(np.tanh(raw_vector[idx] / 10.0))
+            if self.debug_features:
+                feature_names.append("wait_time")
             idx += 1
 
         # Resource features
         # 实例数量特征（类似 none_count，两个代理都同时包含 n_p 和 n_t）
         if cfg.get("needs_instance_count", False):
             norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # n_p
+            if self.debug_features:
+                feature_names.append("n_p")
             idx += 1
             norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # n_t
+            if self.debug_features:
+                feature_names.append("n_t")
             idx += 1
         if cfg["needs_util_p"]:
             norm_vec.append(np.clip(raw_vector[idx], 0, 1))
+            if self.debug_features:
+                feature_names.append("util_p")
             idx += 1
         if cfg["needs_util_d"]:
             norm_vec.append(np.clip(raw_vector[idx], 0, 1))
+            if self.debug_features:
+                feature_names.append("util_d")
             idx += 1
         if cfg["needs_util_mem"]:
             norm_vec.append(np.clip(raw_vector[idx], 0, 1))
+            if self.debug_features:
+                feature_names.append("util_mem")
             idx += 1
 
         # SLO features
         if cfg["needs_ttft"]:
-            for _ in range(3):
+            for i in range(3):
                 norm_vec.append(np.tanh(raw_vector[idx]))
+                if self.debug_features:
+                    feature_names.append(f"ttft_p{['50', '90', '99'][i]}")
                 idx += 1
         if cfg["needs_tbt"]:
-            for _ in range(3):
+            for i in range(3):
                 norm_vec.append(np.tanh(raw_vector[idx]))
+                if self.debug_features:
+                    feature_names.append(f"tbt_p{['50', '90', '99'][i]}")
                 idx += 1
 
         # Scaling features
         if cfg["needs_scaling_prompt"]:
             norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # scaling_up_prompt
+            if self.debug_features:
+                feature_names.append("scaling_up_prompt")
             idx += 1
             norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # draining_prompt
+            if self.debug_features:
+                feature_names.append("draining_prompt")
             idx += 1
         if cfg["needs_scaling_token"]:
             norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # scaling_up_token
+            if self.debug_features:
+                feature_names.append("scaling_up_token")
             idx += 1
             norm_vec.append(np.clip(raw_vector[idx] / MAX_INSTANCES, 0, 1))  # draining_token
+            if self.debug_features:
+                feature_names.append("draining_token")
             idx += 1
 
         # None count features (瓶颈指标，使用log1p归一化)
@@ -476,9 +535,13 @@ class RLStateCollector:
         if cfg.get("needs_none_count", False):
             norm_prompt_none = np.log1p(raw_vector[idx]+1) / 500.0
             norm_vec.append(norm_prompt_none)  # prompt_none_count
+            if self.debug_features:
+                feature_names.append("prompt_none_count")
             idx += 1
             norm_token_none = np.log1p(raw_vector[idx]+1) / 500.0
             norm_vec.append(norm_token_none)  # token_none_count
+            if self.debug_features:
+                feature_names.append("token_none_count")
             idx += 1
 
         # Last action feature (动作通常在 [-1, 1] 范围内，使用 tanh 归一化到 [-1, 1])
@@ -486,8 +549,12 @@ class RLStateCollector:
         # 两个代理都接收两个动作（prompt_action 和 token_action）
         if cfg.get("needs_last_action", False):
             norm_vec.append(np.tanh(raw_vector[idx]))  # last_prompt_action
+            if self.debug_features:
+                feature_names.append("last_prompt_action")
             idx += 1
             norm_vec.append(np.tanh(raw_vector[idx]))  # last_token_action
+            if self.debug_features:
+                feature_names.append("last_token_action")
             idx += 1
 
         # Use time feature (使用时间，使用 log1p 归一化)
@@ -495,6 +562,8 @@ class RLStateCollector:
         if cfg.get("needs_usetime", False):
             # 使用 log1p 归一化，假设最大使用时间为 1000（可以根据实际情况调整）
             norm_vec.append(np.log1p(raw_vector[idx]) / np.log1p(200.0)) #最大实例数*决策间隔
+            if self.debug_features:
+                feature_names.append("use_time")
             idx += 1
 
         # Timestamp feature (时间戳特征，已经在 _collect_snapshot 中归一化)
@@ -502,9 +571,14 @@ class RLStateCollector:
         if cfg.get("needs_timestamp", False):
             # 时间戳已经在 _collect_snapshot 中使用 tanh 归一化，直接使用即可
             norm_vec.append(raw_vector[idx])
+            if self.debug_features:
+                feature_names.append("timestamp")
             idx += 1
 
-        # print(norm_vec)
+        # 如果开启调试模式，输出特征名称和对应的归一化值（一行输出）
+        if self.debug_features:
+            feature_str = " | ".join([f"{name}={value:.4f}" for name, value in zip(feature_names, norm_vec)])
+            logging.info(f"[{self.mode.upper()}] Features (dim={len(norm_vec)}): {feature_str}")
 
         return np.array(norm_vec, dtype=np.float32)
 
@@ -748,6 +822,8 @@ class RLStateCollector:
         
         # Workload
         if cfg["needs_rps"]:
+            dim += 1
+        if cfg.get("needs_rps_delta", False):
             dim += 1
         if cfg["needs_prompt_rate"]:
             dim += 1

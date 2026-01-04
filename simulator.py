@@ -385,6 +385,12 @@ class TraceRLSimulator(Simulator):
             new_router: 新初始化的 Router 对象（可选）
             new_arbiter: 新初始化的 Arbiter 对象（可选）
         """
+        # 在开始新 trace 之前，确保上一个 trace 的所有文件流都已关闭
+        if hasattr(self, 'prompt_reward_recorder') and self.prompt_reward_recorder is not None:
+            self.prompt_reward_recorder.close()
+        if hasattr(self, 'token_reward_recorder') and self.token_reward_recorder is not None:
+            self.token_reward_recorder.close()
+        
         # 如果提供了新的组件，则重新初始化所有组件
         if new_cluster is not None and new_applications is not None and \
            new_router is not None and new_arbiter is not None:
@@ -702,8 +708,8 @@ class TraceSACSimulator(Simulator):
         self.router = router
         self.arbiter = arbiter
         self.decision_interval = 2  # 决策间隔（秒）
-        #
-        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp']
+
+        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta']
         self.rl_config = {
             "w_cost": 0.2,
             "w_slo": 0.8,
@@ -713,21 +719,29 @@ class TraceSACSimulator(Simulator):
             "action_mig_step": 3,
             "min_instances_per_pool": 1,
             "max_total_instances": 100,
-            "stack_size": 4
+            "stack_size": 1,
+            "debug_features":False
         }
-        rl_config = self.rl_config
-        
-        # 状态堆叠大小
-        self.stack_size = self.rl_config.get("stack_size", 4)
 
-        # 使用 joint 模式的状态收集器（单一代理）
+        # SAC 超参数
+        self.layer_size = 256  # 网络隐藏层大小
+        self.replay_buffer_size = int(1E6)
+        self.batch_size = 256
+        self.train_freq = 30  # 每多少个决策步训练一次
+        self.min_steps_before_training = 1000  # 开始训练前的最小步数
+
+        rl_config = self.rl_config
+        self.stack_size = self.rl_config.get("stack_size", 1)
+        debug_features = self.rl_config.get("debug_features", False)
+
         self.state_collector = RLStateCollector(
             cluster=cluster,
             router=router,
             applications=applications,
             stack_size=self.stack_size,
             mode="joint",  # 使用 joint 模式，观察整个系统
-            enabled_features=self.enabled_features
+            enabled_features=self.enabled_features,
+            debug_features=debug_features
         )
 
         # 奖励计算器（joint 模式）
@@ -744,12 +758,7 @@ class TraceSACSimulator(Simulator):
             config=rl_config,
         )
 
-        # SAC 超参数
-        self.layer_size = 256  # 网络隐藏层大小
-        self.replay_buffer_size = int(1E6)
-        self.batch_size = 256
-        self.train_freq = 30  # 每多少个决策步训练一次
-        self.min_steps_before_training = 100  # 开始训练前的最小步数
+
 
         # 计算状态和动作维度
         obs_dim = self.state_collector.feature_dim * self.stack_size
@@ -910,6 +919,10 @@ class TraceSACSimulator(Simulator):
     def reset_for_new_trace(self, new_trace, new_cluster=None, new_applications=None,
                             new_router=None, new_arbiter=None):
         """重置模拟器状态以加载新的 trace，但保持 SAC agent 和训练状态"""
+        # 在开始新 trace 之前，确保上一个 trace 的所有文件流都已关闭
+        if hasattr(self, 'reward_recorder') and self.reward_recorder is not None:
+            self.reward_recorder.close()
+        
         if new_cluster is not None and new_applications is not None and \
            new_router is not None and new_arbiter is not None:
             self.cluster = new_cluster
@@ -918,6 +931,8 @@ class TraceSACSimulator(Simulator):
             self.arbiter = new_arbiter
 
             from RL.state import RLStateCollector
+            # 保持调试开关状态
+            debug_features = self.rl_config.get("debug_features", False)
             self.state_collector = RLStateCollector(
                 cluster=new_cluster,
                 router=new_router,
@@ -925,7 +940,8 @@ class TraceSACSimulator(Simulator):
                 stack_size=self.stack_size,
                 mode="joint",
                 reset_shared_stats=True,
-                enabled_features=self.enabled_features
+                enabled_features=self.enabled_features,
+                debug_features=debug_features
             )
 
             from RL.action import RLActionExecutor
