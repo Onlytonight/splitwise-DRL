@@ -26,6 +26,12 @@ def file_logger(name, level=logging.INFO):
     # don't print to console (don't propagate to root logger)
     logger.propagate = False
 
+    # 清理旧的 FileHandler（如果存在），避免重复添加导致文件句柄泄漏
+    for handler in logger.handlers[:]:
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
+            logger.removeHandler(handler)
+
     # Ensure the entire parent directory exists
     log_file = f"{name}.csv"
     log_path = Path(log_file)

@@ -391,6 +391,16 @@ class TraceRLSimulator(Simulator):
         if hasattr(self, 'token_reward_recorder') and self.token_reward_recorder is not None:
             self.token_reward_recorder.close()
         
+        # 关闭旧的 applications 中 scheduler 的 logger handlers
+        if hasattr(self, 'applications') and self.applications is not None:
+            for application in self.applications.values():
+                if hasattr(application, 'scheduler') and application.scheduler is not None:
+                    if hasattr(application.scheduler, 'scheduler_logger') and \
+                       application.scheduler.scheduler_logger is not None:
+                        for handler in application.scheduler.scheduler_logger.handlers[:]:
+                            handler.close()
+                            application.scheduler.scheduler_logger.removeHandler(handler)
+        
         # 如果提供了新的组件，则重新初始化所有组件
         if new_cluster is not None and new_applications is not None and \
            new_router is not None and new_arbiter is not None:
@@ -711,8 +721,8 @@ class TraceSACSimulator(Simulator):
 
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta']
         self.rl_config = {
-            "w_cost": 0.7,
-            "w_slo": 0.3,
+            "w_cost": 0.6,
+            "w_slo": 0.4,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
@@ -922,6 +932,16 @@ class TraceSACSimulator(Simulator):
         # 在开始新 trace 之前，确保上一个 trace 的所有文件流都已关闭
         if hasattr(self, 'reward_recorder') and self.reward_recorder is not None:
             self.reward_recorder.close()
+        
+        # 关闭旧的 applications 中 scheduler 的 logger handlers
+        if hasattr(self, 'applications') and self.applications is not None:
+            for application in self.applications.values():
+                if hasattr(application, 'scheduler') and application.scheduler is not None:
+                    if hasattr(application.scheduler, 'scheduler_logger') and \
+                       application.scheduler.scheduler_logger is not None:
+                        for handler in application.scheduler.scheduler_logger.handlers[:]:
+                            handler.close()
+                            application.scheduler.scheduler_logger.removeHandler(handler)
         
         if new_cluster is not None and new_applications is not None and \
            new_router is not None and new_arbiter is not None:
