@@ -721,8 +721,8 @@ class TraceSACSimulator(Simulator):
 
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta']
         self.rl_config = {
-            "w_cost": 0.7,
-            "w_slo": 0.3,
+            "w_cost": 0.5,
+            "w_slo": 0.5,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
