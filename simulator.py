@@ -721,8 +721,8 @@ class TraceSACSimulator(Simulator):
 
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta']
         self.rl_config = {
-            "w_cost": 0.5,
-            "w_slo": 0.5,
+            "w_cost": 0.6,
+            "w_slo": 0.4,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
@@ -738,7 +738,7 @@ class TraceSACSimulator(Simulator):
         self.replay_buffer_size = int(1E6)
         self.batch_size = 256
         self.train_freq = 30  # 每多少个决策步训练一次
-        self.min_steps_before_training = 1000  # 开始训练前的最小步数
+        self.min_steps_before_training = 4096  # 开始训练前的最小步数
 
         rl_config = self.rl_config
         self.stack_size = self.rl_config.get("stack_size", 1)
