@@ -17,7 +17,8 @@ end_time: 86400
 debug: False
 seed: 0
 trace_list:
-  - traces/burst_144/day_30.csv
+#  - traces/burst_144/day_30.csv
+  - traces/rr_conv_150
 
 trace_epochs: 1  # 单个 trace 的循环次数（当使用 trace_list 时，此参数用于控制整个列表的循环次数）
 trace_list_repeats: 1000  # trace_list 的循环次数

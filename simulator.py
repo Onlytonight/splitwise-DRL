@@ -738,7 +738,7 @@ class TraceSACSimulator(Simulator):
         self.replay_buffer_size = int(1E6)
         self.batch_size = 256
         self.train_freq = 30  # 每多少个决策步训练一次
-        self.min_steps_before_training = 4096  # 开始训练前的最小步数
+        self.min_steps_before_training = 1000  # 开始训练前的最小步数
 
         rl_config = self.rl_config
         self.stack_size = self.rl_config.get("stack_size", 1)
