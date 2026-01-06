@@ -1127,11 +1127,9 @@ class TraceSACSimulator(Simulator):
             self.trace_stats['avg_nth_token_overhead'].append(reward_info.get('avg_nth_token_overhead', 0))
             self.trace_stats['actions'].append([self.last_action[0], self.last_action[1]])
 
-        if self.finish_training:
-            return
-
-        # 3. SAC 训练
-        if (self.decision_step >= self.min_steps_before_training and
+        # 3. SAC 训练（仿真评估模式下关闭训练）
+        if (not self.eval_only and
+            self.decision_step >= self.min_steps_before_training and
             self.decision_step % self.train_freq == 0 and
             self.replay_buffer.num_steps_can_sample() >= self.batch_size):
             
@@ -1140,8 +1138,9 @@ class TraceSACSimulator(Simulator):
             batch = np_to_pytorch_batch(batch)
             self.trainer.train_from_torch(batch)
 
-        # 4. 保存模型
-        if self.decision_step % self.save_model_freq == 0 and self.decision_step > 0:
+        # 4. 保存模型（仿真评估模式下不再定时保存模型）
+        if (not self.eval_only and
+            self.decision_step % self.save_model_freq == 0 and self.decision_step > 0):
             cp_dir = "cp"
             os.makedirs(cp_dir, exist_ok=True)
             import datetime
@@ -1154,6 +1153,10 @@ class TraceSACSimulator(Simulator):
                 'qf2': self.qf2.state_dict(),
             }, model_path)
             logging.info(f"SAC model saved to {model_path}")
+
+        # 最后一秒不再做决策
+        if self.finish_training:
+            return
 
         # 5. SAC 策略推理并执行动作
         # get_action 期望 numpy 数组，并且不接受 deterministic 参数
@@ -1179,8 +1182,8 @@ class TraceSACSimulator(Simulator):
         RLStateCollector.clear_snapshot_cache()
 
         # 7. 递归调度下一次决策
-        if current_time + self.decision_interval < self.end_time:
-            if rps == 0:
+        if current_time + self.decision_interval < 144:
+            if current_time + self.decision_interval == 142:
                 self.finish_training = True
             self.schedule(self.decision_interval, self.run_decision_cycle)
 
