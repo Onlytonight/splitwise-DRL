@@ -748,7 +748,7 @@ class TraceSACSimulator(Simulator):
         self.batch_size = 256
         self.train_freq = 2  #
         self.min_steps_before_training = 4096  # 开始训练前的最小步数
-        self.save_model_freq = 70
+        self.save_model_freq = 100
 
         rl_config = self.rl_config
         self.stack_size = self.rl_config.get("stack_size", 1)
@@ -983,7 +983,7 @@ class TraceSACSimulator(Simulator):
         # 在重置前保存上一个trace的结果（如果提供了trace_index）
         if trace_index is not None and trace_index > 1:
             # 保存上一个trace（trace_index - 1）的结果
-            logging.info(f"Saving results for trace {trace_index - 1} before reset")
+            # logging.info(f"Saving results for trace {trace_index - 1} before reset")
             self.save_results(detailed=True, trace_index=trace_index - 1)
         
         # 在开始新 trace 之前，确保上一个 trace 的所有文件流都已关闭

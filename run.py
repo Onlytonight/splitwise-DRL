@@ -101,6 +101,9 @@ def run_simulation(cfg):
         # 运行第一个 trace
         logging.info(f"Running trace {1}/{len(trace_paths)}: {trace_paths[0]}")
         sim.run()
+        # 保存第一个trace的结果
+        logging.info(f"Saving results for trace 1")
+        sim.save_results(detailed=True, trace_index=1)
         
         # 循环处理剩余的 trace
         for epoch, trace_path in enumerate(trace_paths[1:], start=2):
