@@ -701,6 +701,14 @@ class TraceSACSimulator(Simulator):
     """
     使用 SAC 算法的强化学习模拟器
     简化版本：只使用一个 RL 代理（joint 模式）
+
+    如果提供了 model_path，则会在初始化时从该路径加载已经训练好的模型参数。
+    期望的 checkpoint 格式与本文件中保存的一致，即：
+        torch.save({
+            'policy': policy.state_dict(),
+            'qf1': qf1.state_dict(),
+            'qf2': qf2.state_dict(),
+        }, path)
     """
     _first_save = True
 
@@ -710,7 +718,8 @@ class TraceSACSimulator(Simulator):
                  applications,
                  router,
                  arbiter,
-                 end_time):
+                 end_time,
+                 model_path: str = None):
         super().__init__(end_time)
         self.trace = trace
         self.cluster = cluster
@@ -737,9 +746,9 @@ class TraceSACSimulator(Simulator):
         self.layer_size = 128  # 网络隐藏层大小
         self.replay_buffer_size = int(1E6)
         self.batch_size = 256
-        self.train_freq = 30  # 每多少个决策步训练一次
+        self.train_freq = 2  #
         self.min_steps_before_training = 4096  # 开始训练前的最小步数
-        self.save_model_freq = 30
+        self.save_model_freq = 70
 
         rl_config = self.rl_config
         self.stack_size = self.rl_config.get("stack_size", 1)
@@ -858,12 +867,47 @@ class TraceSACSimulator(Simulator):
         self.target_qf1.to(ptu.device)
         self.target_qf2.to(ptu.device)
 
+        # 如果提供了模型路径，则尝试从该路径加载 checkpoint（不再在目录中随机选择）
+        if model_path is not None:
+            try:
+                ckpt_path = model_path
+                # 允许相对路径（相对于当前工作目录）
+                if not os.path.isabs(ckpt_path):
+                    ckpt_path = os.path.join(os.getcwd(), ckpt_path)
+
+                if not os.path.isfile(ckpt_path):
+                    logging.warning(f"Model checkpoint file does not exist, skip loading: {ckpt_path}")
+                else:
+                    logging.info(f"Loading SAC checkpoint from: {ckpt_path}")
+                    state_dicts = torch.load(ckpt_path, map_location=ptu.device)
+
+                    # 兼容只保存 policy 的简单 checkpoint
+                    if "policy" in state_dicts:
+                        self.policy.load_state_dict(state_dicts["policy"])
+                    else:
+                        logging.warning("No 'policy' key in checkpoint, skip policy loading")
+
+                    if "qf1" in state_dicts and "qf2" in state_dicts:
+                        self.qf1.load_state_dict(state_dicts["qf1"])
+                        self.qf2.load_state_dict(state_dicts["qf2"])
+                    else:
+                        logging.warning("No 'qf1'/'qf2' keys in checkpoint, skip Q-network loading")
+
+                    logging.info("SAC model loaded successfully from checkpoint")
+            except Exception as e:
+                logging.exception(f"Failed to load SAC model from path '{model_path}': {e}")
+
         # 训练状态追踪
+        # 训练 / 评估状态追踪
         self.decision_step = 0
         self.last_state = None
         self.last_action = np.zeros(2, dtype=np.float32)
         self.last_action_executed = True
         self.finish_training = False
+
+        # 如果提供了 model_path，默认认为是“仿真评估模式”：不再训练和定时保存模型
+        # 也可以在之后根据需要扩展成从配置显式控制
+        self.eval_only = model_path is not None
 
         # 在初始化时创建 RewardRecorder 实例，整个训练过程复用
         self.reward_recorder = RewardRecorder("reward_sac.csv", clear_file=True, buffer_size=100)
@@ -1083,11 +1127,9 @@ class TraceSACSimulator(Simulator):
             self.trace_stats['avg_nth_token_overhead'].append(reward_info.get('avg_nth_token_overhead', 0))
             self.trace_stats['actions'].append([self.last_action[0], self.last_action[1]])
 
-        if self.finish_training:
-            return
-
-        # 3. SAC 训练
-        if (self.decision_step >= self.min_steps_before_training and
+        # 3. SAC 训练（仿真评估模式下关闭训练）
+        if (not self.eval_only and
+            self.decision_step >= self.min_steps_before_training and
             self.decision_step % self.train_freq == 0 and
             self.replay_buffer.num_steps_can_sample() >= self.batch_size):
             
@@ -1096,8 +1138,9 @@ class TraceSACSimulator(Simulator):
             batch = np_to_pytorch_batch(batch)
             self.trainer.train_from_torch(batch)
 
-        # 4. 保存模型
-        if self.decision_step % self.save_model_freq == 0 and self.decision_step > 0:
+        # 4. 保存模型（仿真评估模式下不再定时保存模型）
+        if (not self.eval_only and
+            self.decision_step % self.save_model_freq == 0 and self.decision_step > 0):
             cp_dir = "cp"
             os.makedirs(cp_dir, exist_ok=True)
             import datetime
@@ -1110,6 +1153,10 @@ class TraceSACSimulator(Simulator):
                 'qf2': self.qf2.state_dict(),
             }, model_path)
             logging.info(f"SAC model saved to {model_path}")
+
+        # 最后一秒不再做决策
+        if self.finish_training:
+            return
 
         # 5. SAC 策略推理并执行动作
         # get_action 期望 numpy 数组，并且不接受 deterministic 参数
@@ -1135,8 +1182,8 @@ class TraceSACSimulator(Simulator):
         RLStateCollector.clear_snapshot_cache()
 
         # 7. 递归调度下一次决策
-        if current_time + self.decision_interval < self.end_time:
-            if rps == 0:
+        if current_time + self.decision_interval < 144:
+            if current_time + self.decision_interval == 142:
                 self.finish_training = True
             self.schedule(self.decision_interval, self.run_decision_cycle)
 
