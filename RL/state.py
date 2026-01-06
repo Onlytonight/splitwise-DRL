@@ -384,7 +384,8 @@ class RLStateCollector:
 
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
         # 获取 usetime
-        reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft, tbt, ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time]
+        reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft, tbt,
+                        ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time,rps]
         instance_num = [n_p, n_t, util_p, util_d]
 
         result = (np.array(snapshot, dtype=np.float32), instance_num, reward_stats, rps)

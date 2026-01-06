@@ -138,9 +138,10 @@ class RLRewardCalculator:
         # 从 raw_stats 中获取 usetime（由 state.py 的 get_usetime 函数计算）
         use_time = raw_stats[13]
 
-        slo_reward = self.get_slo_reward(raw_stats[7],raw_stats[8])
-        reward = self.w_slo * slo_reward - self.w_cost * cost_score
-        # print("reward:",reward)
+        slo_reward = self.get_slo_reward(raw_stats[7],raw_stats[8]) * (raw_stats[14])
+        print("slo_reward:",slo_reward)
+        reward = (self.w_slo * slo_reward - self.w_cost * cost_score)*0.1
+        print("reward:",reward)
         # -3 * (queue_len/10000)
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)
 
