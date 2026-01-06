@@ -129,11 +129,13 @@ def run_simulation(cfg):
                 new_arbiter.add_application(application)
             
             # 重置模拟器状态（保持 PPO agents），并传入新初始化的组件
+            # 传递 trace_index，在 reset_for_new_trace 中会保存上一个trace的结果
             sim.reset_for_new_trace(new_trace, 
                                    new_cluster=new_cluster,
                                    new_applications=new_applications,
                                    new_router=new_router,
-                                   new_arbiter=new_arbiter)
+                                   new_arbiter=new_arbiter,
+                                   trace_index=epoch)
             
             # 重新初始化起始状态
             init_start_state(cfg,
@@ -144,6 +146,10 @@ def run_simulation(cfg):
             
             # 运行新的 trace
             sim.run()
+        
+        # 保存最后一个trace的结果
+        logging.info(f"Saving results for last trace {len(trace_paths)}")
+        sim.save_results(detailed=True, trace_index=len(trace_paths))
         
         logging.info(f"Completed multi-trace training with {len(trace_paths)} traces")
     else:
@@ -185,11 +191,13 @@ def run_simulation(cfg):
                     new_arbiter.add_application(application)
                 
                 # 重置模拟器状态（保持 PPO agents），并传入新初始化的组件
+                # 传递 trace_index，在 reset_for_new_trace 中会保存上一个trace的结果
                 sim.reset_for_new_trace(trace,
                                        new_cluster=new_cluster,
                                        new_applications=new_applications,
                                        new_router=new_router,
-                                       new_arbiter=new_arbiter)
+                                       new_arbiter=new_arbiter,
+                                       trace_index=epoch)
                 
                 # 重新初始化起始状态
                 init_start_state(cfg,
@@ -207,6 +215,10 @@ def run_simulation(cfg):
             
             # 运行 trace
             sim.run()
+        
+        # 保存最后一个trace的结果
+        logging.info(f"Saving results for last trace epoch {trace_epochs}")
+        sim.save_results(detailed=True, trace_index=trace_epochs)
         
         if trace_epochs > 1:
             logging.info(f"Completed training with {trace_epochs} epochs")

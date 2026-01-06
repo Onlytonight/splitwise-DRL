@@ -778,8 +778,6 @@ class TraceSACSimulator(Simulator):
             config=rl_config,
         )
 
-
-
         # 计算状态和动作维度
         obs_dim = self.state_collector.feature_dim * self.stack_size
         action_dim = 2  # 联合动作：[prompt_action, token_action]
@@ -971,8 +969,23 @@ class TraceSACSimulator(Simulator):
         )
 
     def reset_for_new_trace(self, new_trace, new_cluster=None, new_applications=None,
-                            new_router=None, new_arbiter=None):
-        """重置模拟器状态以加载新的 trace，但保持 SAC agent 和训练状态"""
+                            new_router=None, new_arbiter=None, trace_index=None):
+        """重置模拟器状态以加载新的 trace，但保持 SAC agent 和训练状态
+        
+        Args:
+            new_trace: 新的 Trace 对象
+            new_cluster: 新初始化的 Cluster 对象（可选）
+            new_applications: 新初始化的 Applications 字典（可选）
+            new_router: 新初始化的 Router 对象（可选）
+            new_arbiter: 新初始化的 Arbiter 对象（可选）
+            trace_index: trace的索引（第几次循环），如果提供则在重置前保存上一个trace的结果
+        """
+        # 在重置前保存上一个trace的结果（如果提供了trace_index）
+        if trace_index is not None and trace_index > 1:
+            # 保存上一个trace（trace_index - 1）的结果
+            logging.info(f"Saving results for trace {trace_index - 1} before reset")
+            self.save_results(detailed=True, trace_index=trace_index - 1)
+        
         # 在开始新 trace 之前，确保上一个 trace 的所有文件流都已关闭
         if hasattr(self, 'reward_recorder') and self.reward_recorder is not None:
             self.reward_recorder.close()
@@ -1076,7 +1089,8 @@ class TraceSACSimulator(Simulator):
         # if len(self.trace_stats['rewards']) > 0:
         #     self._print_trace_summary()
 
-        self.save_results()
+        # 注意：save_results 现在在 run.py 中调用，以便传递 trace_index
+        # self.save_results()
 
     def run_decision_cycle(self):
         """SAC Agent 的核心决策循环"""
@@ -1187,8 +1201,13 @@ class TraceSACSimulator(Simulator):
                 self.finish_training = True
             self.schedule(self.decision_interval, self.run_decision_cycle)
 
-    def save_results(self, detailed=True):
-        """保存模拟结果"""
+    def save_results(self, detailed=True, trace_index=None):
+        """保存模拟结果
+        
+        Args:
+            detailed: 是否保存详细结果
+            trace_index: trace的索引（第几次循环），如果提供则用于生成文件名
+        """
         import os
         from hydra.utils import get_original_cwd
 
@@ -1217,25 +1236,40 @@ class TraceSACSimulator(Simulator):
                 for metric, value in summary.items():
                     summary_results[f"{key}_{metric}"].append(value)
 
-        # 判断是否是第一次保存
-        is_first_save = TraceSACSimulator._first_save
-        if is_first_save:
-            TraceSACSimulator._first_save = False
+        # 根据 trace_index 生成文件名
+        if trace_index is not None:
+            # 使用 trace 索引生成文件名
+            summary_filename = f"summary_trace_{trace_index}.csv"
+            is_first_save = False  # 每次都是新文件，不清空
+        else:
+            # 原有逻辑：判断是否是第一次保存
+            summary_filename = "summary.csv"
+            is_first_save = TraceSACSimulator._first_save
+            if is_first_save:
+                TraceSACSimulator._first_save = False
 
-        summary_path = os.path.join(current_dir, "summary.csv")
+        summary_path = os.path.join(current_dir, summary_filename)
         utils.save_dict_as_csv(summary_results, summary_path, append=not is_first_save)
-        # logging.info(f"Summary results saved to: {summary_path}")
+        logging.info(f"Summary results saved to: {summary_path}")
 
         if detailed:
             detailed_dir = os.path.join(current_dir, "detailed")
             os.makedirs(detailed_dir, exist_ok=True)
 
             for application_id, result in sched_results.items():
-                sched_path = os.path.join(detailed_dir, f"{application_id}.csv")
+                if trace_index is not None:
+                    sched_filename = f"{application_id}_trace_{trace_index}.csv"
+                else:
+                    sched_filename = f"{application_id}.csv"
+                sched_path = os.path.join(detailed_dir, sched_filename)
                 utils.save_dict_as_csv(result, sched_path, append=not is_first_save)
                 # logging.info(f"Scheduler results for {application_id} saved to: {sched_path}")
 
             for application_id, result in alloc_results.items():
-                alloc_path = os.path.join(detailed_dir, f"{application_id}_alloc.csv")
+                if trace_index is not None:
+                    alloc_filename = f"{application_id}_alloc_trace_{trace_index}.csv"
+                else:
+                    alloc_filename = f"{application_id}_alloc.csv"
+                alloc_path = os.path.join(detailed_dir, alloc_filename)
                 utils.save_dict_as_csv(result, alloc_path, append=not is_first_save)
                 # logging.info(f"Allocator results for {application_id} saved to: {alloc_path}")
