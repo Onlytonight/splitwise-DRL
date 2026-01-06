@@ -138,10 +138,16 @@ class RLRewardCalculator:
         # 从 raw_stats 中获取 usetime（由 state.py 的 get_usetime 函数计算）
         use_time = raw_stats[13]
 
-        slo_reward = self.get_slo_reward(raw_stats[7],raw_stats[8]) * (raw_stats[14])
-        print("slo_reward:",slo_reward)
+        clipped_rps = min(max(raw_stats[14], 0.1), 10)
+        # 使用平滑的负载权重函数，让奖励与负载相关但不完全由负载主导
+        # 使用平方根缩放，让负载的影响更温和
+        # 最小权重0.3，最大权重1.0，确保即使低负载时也有一定权重
+        # 当 rps=0.1 时，load_weight≈0.37；当 rps=10 时，load_weight=1.0
+        load_weight = 0.3 + 0.7 * np.sqrt(clipped_rps / 10.0)
+        slo_reward = self.get_slo_reward(raw_stats[7], raw_stats[8]) * load_weight
+        # print("slo_reward:",slo_reward)
         reward = (self.w_slo * slo_reward - self.w_cost * cost_score)*0.1
-        print("reward:",reward)
+        # print("reward:",reward)
         # -3 * (queue_len/10000)
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)
 
