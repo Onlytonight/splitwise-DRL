@@ -729,8 +729,8 @@ class TraceSACSimulator(Simulator):
         self.arbiter = arbiter
         self.decision_interval = 2  # 决策间隔（秒）
 
-        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta']
-                                 # "length","slo","rate","util_mem",'draining',"p_ins_pending_token"]
+        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
+                                 "length","slo","rate","util_mem",'draining',"p_ins_pending_token"]
         self.rl_config = {
             "w_cost": 0.6,
             "w_slo": 0.4,

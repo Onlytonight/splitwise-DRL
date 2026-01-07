@@ -318,27 +318,60 @@ class RLRewardCalculator:
         """重置内部状态 (每个 Episode 开始时调用)"""
         self.last_instances = {'p': 0, 't': 0}
 
-    def get_slo_reward(self,ttft,tbt):
+    def get_slo_reward(self, ttft, tbt):
+        """
+        根据 TTFT/TBT 与 SLO 的相对关系计算 SLO 奖励：
+        - 在 SLO 以内：给定一个固定正奖励（表示满意）
+        - 超过 SLO 但不超过 2 倍：正向奖励从正值线性衰减到 0（“超过一倍以内给线性奖励”）
+        - 超过 2 倍 SLO：线性负奖励（“超出一倍以外给线性惩罚”）
+        """
         slo_reward = 0.0
         reward_tag = True
         TTFT_SLO = [2, 3, 6]
         TBT_SLO = [1.25, 1.5, 5]
-        # TTFT/SL0 > 1 用线性惩罚，否则给大正奖励
-        for i in range(len(TTFT_SLO)):
-            if ttft[i] > TTFT_SLO[i]:
-                slo_reward += max(0, 20 - 5 * (ttft[i] - TTFT_SLO[i]) / TTFT_SLO[i])  # 线性扣分，下限0
-                reward_tag = False
-            else:
-                slo_reward += 30  # 大正奖励
-            if tbt[i] > TBT_SLO[i]:
-                slo_reward += max(0, 10 - 5 * (tbt[i] - TBT_SLO[i]) / TBT_SLO[i])  # 线性扣分，下限0
-                reward_tag = False
-            else:
-                slo_reward += 20  # 大正奖励
 
+        for i in range(len(TTFT_SLO)):
+            # ----- TTFT 奖励/惩罚 -----
+            tt = ttft[i]
+            tt_slo = TTFT_SLO[i]
+            ratio_tt = tt / tt_slo if tt_slo > 0 else 1.0
+            base_tt_pos = 30.0  # 满足或远优于 SLO 时的正奖励尺度
+
+            if ratio_tt <= 1.0:
+                # SLO 以内：给固定正奖励
+                slo_reward += base_tt_pos
+            elif ratio_tt <= 2.0:
+                # (SLO, 2*SLO]：从 base_tt_pos 线性下降到 0
+                factor = 2.0 - ratio_tt  # 1 -> 0
+                slo_reward += max(0.0, base_tt_pos * factor)
+                reward_tag = False
+            else:
+                # > 2*SLO：线性惩罚（随超标程度线性增加负值）
+                penalty = -base_tt_pos * (ratio_tt - 2.0)
+                slo_reward += penalty
+                reward_tag = False
+
+            # ----- TBT 奖励/惩罚 -----
+            tb = tbt[i]
+            tb_slo = TBT_SLO[i]
+            ratio_tb = tb / tb_slo if tb_slo > 0 else 1.0
+            base_tb_pos = 20.0  # 满足或远优于 SLO 时的正奖励尺度
+
+            if ratio_tb <= 1.0:
+                slo_reward += base_tb_pos
+            elif ratio_tb <= 2.0:
+                factor = 2.0 - ratio_tb  # 1 -> 0
+                slo_reward += max(0.0, base_tb_pos * factor)
+                reward_tag = False
+            else:
+                penalty = -base_tb_pos * (ratio_tb - 2.0)
+                slo_reward += penalty
+                reward_tag = False
+
+        # 所有 P50/P90/P99 都在 SLO 以内时给额外 bonus
         if reward_tag:
             slo_reward += 60.0
-        
+
         return slo_reward
 
 class RewardRecorder:
