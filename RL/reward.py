@@ -23,36 +23,30 @@ class RLRewardCalculator:
         """
         assert mode in ("prompt", "token", "joint")
         self.mode = mode
-        # 1. 权重参数 (需要通过超参数搜索微调)
-        # 新的奖励设计：成本惩罚 + 拥堵惩罚 + 稳定性奖励
-        self.w_cost = config.get("w_cost", 0.5)  # 成本惩罚权重
-        self.w_congestion = config.get("w_congestion", 1.0)  # 拥堵惩罚权重（替代SLO）
-        self.w_stability = config.get("w_stability", 0.1)  # 稳定性奖励权重
+        # 1. 权重参数
+        # 简化设计：只考虑队列惩罚 + 成本惩罚
+        # 目标：队列数为0的情况下成本最低
+        self.w_cost = config.get("w_cost", 0.1)  # 成本惩罚权重
+        self.w_queue = config.get("w_queue", 1.0)  # 队列惩罚权重
         # 保留旧参数以兼容（但不再使用）
-        self.w_slo = config.get("w_slo", 0.0)  # 已废弃，保留以兼容
-        self.w_switch = config.get("w_switch", 0.0)  # 已废弃，保留以兼容
-        self.w_util = config.get("w_util", 0.0)  # 已废弃，保留以兼容
+        self.w_congestion = config.get("w_congestion", 1.0)  # 已废弃，使用w_queue
+        self.w_stability = config.get("w_stability", 0.0)  # 已废弃
+        self.w_slo = config.get("w_slo", 0.0)  # 已废弃
+        self.w_switch = config.get("w_switch", 0.0)  # 已废弃
+        self.w_util = config.get("w_util", 0.0)  # 已废弃
 
         # 2. 硬件成本参数
         self.price_p = 1.0  # Prefill 机器 (基准价格)
-        # self.price_t = price_ratio_token  # Decoding 机器 (通常较便宜)
         self.price_t = 1.0  # 假设都是用同样的机器
         self.max_instances = max_instances
-        self.is_first_step = True
 
-        # 3. 状态记忆 (用于计算切换成本和稳定性奖励)
+        # 3. 状态记忆（简化，不再需要）
         self.last_instances = {'p': 0, 't': 0}
-        self.last_action = 0.0  # 上一次的动作值（用于稳定性奖励）
-        self.current_action = 0.0  # 当前动作值（由simulator更新）
-        
-        # 4. 拥堵惩罚阈值
-        self.PENDING_TOKEN_THRESHOLD = 100.0  # prompt实例待处理token的阈值
-        self.UTIL_MEM_THRESHOLD = 0.9  # 内存利用率过载预警阈值
 
     def calculate_reward(self, cluster, applications, raw_stats, instance_num, action_executed=True, step=0):
         """
-        新的奖励函数：专注于"容量与负载的实时匹配"
-        目标：在保证系统"不拥堵"的前提下，最小化成本
+        简化的奖励函数：只考虑队列和成本
+        目标：队列数为0的情况下成本最低
         
         :param raw_stats: [prompt_rate, token_rate, sch_p_queue, sch_d_queue, n_p, n_t, 
                           avg_prompt_size, ttft, tbt, ins_p_queue, ins_d_queue, 
@@ -72,82 +66,43 @@ class RLRewardCalculator:
         cost_penalty = -self.w_cost * cost_score
 
         # -------------------------------------------------------------
-        # 2. 拥堵惩罚 (Congestion Penalty) - 核心信号
+        # 2. 队列惩罚 (Queue Penalty) - 核心信号
         # -------------------------------------------------------------
-        # A. 队列存在惩罚
+        # 只考虑调度器队列（sch_p_queue 和 sch_d_queue）
         q_prompt = raw_stats[2]  # 调度器中的prompt队列
         q_decoding = raw_stats[3]  # 调度器中的decoding队列
         
         # 根据mode选择关注的队列
         if self.mode == "prompt":
-            queue_penalty = -self.w_congestion * np.log1p(q_prompt + 1) * 0.1
+            # 只关注prompt队列，使用log1p平滑惩罚
+            queue_penalty = -self.w_queue * np.log1p(q_prompt + 1)
         elif self.mode == "token":
-            queue_penalty = -self.w_congestion * np.log1p(q_decoding + 1) * 0.1
+            # 只关注decoding队列
+            queue_penalty = -self.w_queue * np.log1p(q_decoding + 1)
         else:
-            queue_penalty = -self.w_congestion * (np.log1p(q_prompt + 1) + np.log1p(q_decoding + 1)) * 0.1
-        
-        # B. Prefill积压惩罚（从state中获取，这里需要从scheduler获取）
-        # 注意：prompt_instance_pending_token 应该在state中已经计算
-        # 这里我们使用实例队列长度作为替代指标
-        ins_p_queue = raw_stats[9]  # prompt实例队列
-        ins_d_queue = raw_stats[10]  # token实例队列
-        
-        if self.mode == "prompt":
-            pending_penalty = -self.w_congestion * np.log1p(ins_p_queue + 1) * 0.05
-        elif self.mode == "token":
-            pending_penalty = -self.w_congestion * np.log1p(ins_d_queue + 1) * 0.05
-        else:
-            pending_penalty = -self.w_congestion * (np.log1p(ins_p_queue + 1) + np.log1p(ins_d_queue + 1)) * 0.05
-        
-        # C. 利用率过载预警（从instance_num获取）
-        # instance_num格式: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
-        util_p, util_d = instance_num[2], instance_num[3]
-        util_mem_p = instance_num[4] if len(instance_num) > 4 else 0.0
-        util_mem_t = instance_num[5] if len(instance_num) > 5 else 0.0
-        
-        # 如果内存利用率过高，给予惩罚
-        overload_penalty = 0.0
-        if util_mem_p > self.UTIL_MEM_THRESHOLD:
-            overload_penalty -= self.w_congestion * (util_mem_p - self.UTIL_MEM_THRESHOLD) * 10.0
-        if util_mem_t > self.UTIL_MEM_THRESHOLD:
-            overload_penalty -= self.w_congestion * (util_mem_t - self.UTIL_MEM_THRESHOLD) * 10.0
-        
-        congestion_penalty = queue_penalty + pending_penalty + overload_penalty
-
-        # -------------------------------------------------------------
-        # 3. 稳定性奖励 (Stability Bonus) - 可选
-        # -------------------------------------------------------------
-        stability_bonus = 0.0
-        if step > 0 and hasattr(self, 'last_action'):
-            # 如果动作变化很小（接近0），给予小奖励
-            current_action = getattr(self, 'current_action', 0.0)
-            action_change = abs(current_action - self.last_action)
-            if action_change < 0.1:  # 动作变化很小
-                stability_bonus = self.w_stability * (1.0 - action_change * 10.0)
+            # joint模式：两个队列都考虑
+            queue_penalty = -self.w_queue * (np.log1p(q_prompt + 1) + np.log1p(q_decoding + 1))
         
         # -------------------------------------------------------------
-        # 4. 总奖励
+        # 3. 总奖励 = 成本惩罚 + 队列惩罚
         # -------------------------------------------------------------
-        reward = cost_penalty + congestion_penalty + stability_bonus
+        reward = cost_penalty + queue_penalty
         
         # 更新状态记忆
         self.last_instances = {'p': n_p, 't': n_t}
-        if hasattr(self, 'current_action'):
-            self.last_action = self.current_action
 
         # -------------------------------------------------------------
-        # 5. 构建info字典（保留SLO信息用于外部评估）
+        # 4. 构建info字典（保留SLO信息用于外部评估）
         # -------------------------------------------------------------
+        ins_p_queue = raw_stats[9] if len(raw_stats) > 9 else 0
+        ins_d_queue = raw_stats[10] if len(raw_stats) > 10 else 0
+        
         info = {
             'step': step,
             'reward': reward,
             'cost_score': cost_score,
             'cost_penalty': cost_penalty,
-            'congestion_penalty': congestion_penalty,
             'queue_penalty': queue_penalty,
-            'pending_penalty': pending_penalty,
-            'overload_penalty': overload_penalty,
-            'stability_bonus': stability_bonus,
             'n_p': n_p,
             'n_t': n_t,
             # 保留SLO信息用于外部评估（不参与奖励计算）
