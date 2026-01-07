@@ -321,12 +321,11 @@ class RLRewardCalculator:
     def get_slo_reward(self, ttft, tbt):
         """
         根据 TTFT/TBT 与 SLO 的相对关系计算 SLO 奖励：
-        - 在 SLO 以内：给定一个固定正奖励（表示满意）
-        - 超过 SLO 但不超过 2 倍：正向奖励从正值线性衰减到 0（“超过一倍以内给线性奖励”）
-        - 超过 2 倍 SLO：线性负奖励（“超出一倍以外给线性惩罚”）
+        - 以 2 * SLO 为分界线，对应 0 奖励
+        - 小于 2 * SLO 时：按 (2 - 实际值/SLO) 线性正奖励（越小越好，线性增大）
+        - 大于 2 * SLO 时：按 (实际值/SLO - 2) 线性惩罚（越大惩罚越重）
         """
         slo_reward = 0.0
-        reward_tag = True
         TTFT_SLO = [2, 3, 6]
         TBT_SLO = [1.25, 1.5, 5]
 
@@ -335,42 +334,30 @@ class RLRewardCalculator:
             tt = ttft[i]
             tt_slo = TTFT_SLO[i]
             ratio_tt = tt / tt_slo if tt_slo > 0 else 1.0
-            base_tt_pos = 30.0  # 满足或远优于 SLO 时的正奖励尺度
+            base_tt_pos = 10.0  # 满足或远优于 SLO 时的正奖励尺度
 
-            if ratio_tt <= 1.0:
-                # SLO 以内：给固定正奖励
-                slo_reward += base_tt_pos
-            elif ratio_tt <= 2.0:
-                # (SLO, 2*SLO]：从 base_tt_pos 线性下降到 0
+            if ratio_tt <= 2.0:
+                # [0, 2*SLO]：从 2*SLO 处 0 奖励，向左线性增加
                 factor = 2.0 - ratio_tt  # 1 -> 0
                 slo_reward += max(0.0, base_tt_pos * factor)
-                reward_tag = False
             else:
                 # > 2*SLO：线性惩罚（随超标程度线性增加负值）
                 penalty = -base_tt_pos * (ratio_tt - 2.0)
                 slo_reward += penalty
-                reward_tag = False
 
             # ----- TBT 奖励/惩罚 -----
             tb = tbt[i]
             tb_slo = TBT_SLO[i]
             ratio_tb = tb / tb_slo if tb_slo > 0 else 1.0
-            base_tb_pos = 20.0  # 满足或远优于 SLO 时的正奖励尺度
+            base_tb_pos = 10.0  # 满足或远优于 SLO 时的正奖励尺度
 
-            if ratio_tb <= 1.0:
-                slo_reward += base_tb_pos
-            elif ratio_tb <= 2.0:
-                factor = 2.0 - ratio_tb  # 1 -> 0
+            if ratio_tb <= 2.0:
+                # [0, 2*SLO]：从 2*SLO 处 0 奖励，向左线性增加
+                factor = 2.0 - ratio_tb
                 slo_reward += max(0.0, base_tb_pos * factor)
-                reward_tag = False
             else:
                 penalty = -base_tb_pos * (ratio_tb - 2.0)
                 slo_reward += penalty
-                reward_tag = False
-
-        # 所有 P50/P90/P99 都在 SLO 以内时给额外 bonus
-        if reward_tag:
-            slo_reward += 60.0
 
         return slo_reward
 
