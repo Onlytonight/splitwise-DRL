@@ -140,8 +140,13 @@ class RLRewardCalculator:
 
         # 使用平滑的负载权重函数，让奖励与负载相关但不完全由负载主导
         slo_reward = self.get_slo_reward(raw_stats[7], raw_stats[8])
-        # print("slo_reward:",slo_reward)
-        reward = (self.w_slo * slo_reward - self.w_cost * cost_score)*0.1
+        # 当负载很低时，正向的 SLO 奖励应被削弱，惩罚保持原样
+        rps = raw_stats[14] if len(raw_stats) > 14 else 0.0
+        load_factor = np.tanh(rps / 5.0)  # 平滑到 [0,1]，负载高时≈1
+        if slo_reward > 0:
+            slo_reward *= load_factor
+        # print("slo_reward:", slo_reward * self.w_slo, "cost_reward:", -self.w_cost * cost_score, "load_factor:", load_factor)
+        reward = (self.w_slo * slo_reward - self.w_cost * cost_score)
         # print("reward:",reward)
         # -3 * (queue_len/10000)
         # print(-self.w_slo * np.log1p(q_prompt),- self.w_cost * cost_score)

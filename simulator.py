@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import rlkit.rlkit.torch.pytorch_util as ptu
 from rlkit.rlkit.data_management.simple_replay_buffer import SimpleReplayBuffer
+from rlkit.rlkit.data_management.prioritized_replay_buffer import PrioritizedReplayBuffer
 from rlkit.rlkit.torch.sac.policies import TanhGaussianPolicy, MakeDeterministic
 from rlkit.rlkit.torch.sac.sac import SACTrainer
 from rlkit.rlkit.torch.networks import ConcatMlp
@@ -728,11 +729,11 @@ class TraceSACSimulator(Simulator):
         self.arbiter = arbiter
         self.decision_interval = 2  # 决策间隔（秒）
 
-        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
-                                 "length","slo","rate","util_mem",'draining',"p_ins_pending_token"]
+        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta']
+                                 # "length","slo","rate","util_mem",'draining',"p_ins_pending_token"]
         self.rl_config = {
-            "w_cost": 0.4,
-            "w_slo": 0.6,
+            "w_cost": 0.6,
+            "w_slo": 0.4,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
@@ -747,8 +748,8 @@ class TraceSACSimulator(Simulator):
         self.layer_size = 256  # 网络隐藏层大小
         self.replay_buffer_size = int(1E6)
         self.batch_size = 256
-        self.train_freq = 1
-        self.min_steps_before_training = 10000  # 开始训练前的最小步数
+        self.train_freq = 30
+        self.min_steps_before_training = 1000  # 开始训练前的最小步数
         self.save_model_freq = 1000
 
         rl_config = self.rl_config
@@ -841,12 +842,18 @@ class TraceSACSimulator(Simulator):
             use_automatic_entropy_tuning=True,
         )
 
-        # 创建经验回放缓冲区（直接使用 SimpleReplayBuffer，不依赖 env）
-        self.replay_buffer = SimpleReplayBuffer(
+        # 创建经验回放缓冲区
+        # 使用优先经验回放 + 重要性采样
+        self.replay_buffer = PrioritizedReplayBuffer(
             max_replay_buffer_size=self.replay_buffer_size,
             observation_dim=obs_dim,
             action_dim=action_dim,
             env_info_sizes={},
+            replace=True,
+            alpha=0.6,
+            beta=0.4,
+            beta_increment_per_sampling=1e-3,
+            eps=1e-6,
         )
 
         # 初始化GPU设备（如果可用）
@@ -1147,11 +1154,47 @@ class TraceSACSimulator(Simulator):
             self.decision_step >= self.min_steps_before_training and
             self.decision_step % self.train_freq == 0 and
             self.replay_buffer.num_steps_can_sample() >= self.batch_size):
-            
+            print(f"Training at step {self.decision_step}...")
             batch = self.replay_buffer.random_batch(self.batch_size)
+            indices = batch.get('indices', None)
             # 在加入训练之前将numpy batch转换为tensor
-            batch = np_to_pytorch_batch(batch)
-            self.trainer.train_from_torch(batch)
+            torch_batch = np_to_pytorch_batch(batch)
+            self.trainer.train_from_torch(torch_batch)
+
+            # 使用当前 Q 网络计算 TD 误差并更新优先级
+            if indices is not None and hasattr(self.replay_buffer, "update_priorities"):
+                with torch.no_grad():
+                    rewards = torch_batch['rewards']
+                    terminals = torch_batch['terminals']
+                    obs = torch_batch['observations']
+                    actions = torch_batch['actions']
+                    next_obs = torch_batch['next_observations']
+
+                    # 计算当前 alpha（自动熵调节）
+                    if self.trainer.use_automatic_entropy_tuning:
+                        alpha = self.trainer.log_alpha.exp()
+                    else:
+                        alpha = torch.tensor(1.0, device=ptu.device)
+
+                    # 目标 Q 值
+                    next_dist = self.trainer.policy(next_obs)
+                    new_next_actions, new_log_pi = next_dist.rsample_and_logprob()
+                    new_log_pi = new_log_pi.unsqueeze(-1)
+                    target_q_values = torch.min(
+                        self.trainer.target_qf1(next_obs, new_next_actions),
+                        self.trainer.target_qf2(next_obs, new_next_actions),
+                    ) - alpha * new_log_pi
+                    q_target = self.trainer.reward_scale * rewards + (
+                        1. - terminals
+                    ) * self.trainer.discount * target_q_values
+
+                    # 当前 Q 估计
+                    q1_pred = self.trainer.qf1(obs, actions)
+                    q2_pred = self.trainer.qf2(obs, actions)
+                    q_pred = 0.5 * (q1_pred + q2_pred)
+
+                    td_errors = (q_pred - q_target).abs().cpu().numpy().flatten()
+                self.replay_buffer.update_priorities(indices, td_errors)
 
         # 4. 保存模型（仿真评估模式下不再定时保存模型）
         if (not self.eval_only and

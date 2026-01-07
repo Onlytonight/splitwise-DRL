@@ -70,8 +70,9 @@ class SACTrainer(TorchTrainer, LossFunction):
         self.plotter = plotter
         self.render_eval_paths = render_eval_paths
 
-        self.qf_criterion = nn.MSELoss()
-        self.vf_criterion = nn.MSELoss()
+        # Use element-wise MSE so we can optionally apply importance weights
+        self.qf_criterion = nn.MSELoss(reduction='none')
+        self.vf_criterion = nn.MSELoss(reduction='none')
 
         self.policy_optimizer = optimizer_class(
             self.policy.parameters(),
@@ -150,6 +151,13 @@ class SACTrainer(TorchTrainer, LossFunction):
         actions = batch['actions']
         next_obs = batch['next_observations']
 
+        # Optional importance sampling weights for prioritized replay
+        weights = batch.get('weights', None)
+        if weights is not None:
+            # Ensure weights shape is broadcastable to loss tensors
+            if weights.dim() == 1:
+                weights = weights.unsqueeze(-1)
+
         """
         Policy and Alpha Loss
         """
@@ -183,8 +191,14 @@ class SACTrainer(TorchTrainer, LossFunction):
         ) - alpha * new_log_pi
 
         q_target = self.reward_scale * rewards + (1. - terminals) * self.discount * target_q_values
-        qf1_loss = self.qf_criterion(q1_pred, q_target.detach())
-        qf2_loss = self.qf_criterion(q2_pred, q_target.detach())
+        td_error1 = self.qf_criterion(q1_pred, q_target.detach())
+        td_error2 = self.qf_criterion(q2_pred, q_target.detach())
+        if weights is not None:
+            qf1_loss = (td_error1 * weights).mean()
+            qf2_loss = (td_error2 * weights).mean()
+        else:
+            qf1_loss = td_error1.mean()
+            qf2_loss = td_error2.mean()
 
         """
         Save some statistics for eval
