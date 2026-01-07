@@ -730,12 +730,15 @@ class TraceSACSimulator(Simulator):
         self.decision_interval = 2  # 决策间隔（秒）
 
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
-                                 "length","slo","rate","util_mem",'draining',"p_ins_pending_token"]
+                                 "length","rate","util_mem",'draining',"p_ins_pending_token","queue_delta"]
         self.rl_config = {
-            "w_cost": 0.6,
-            "w_slo": 0.4,
-            "w_switch": 0.1,
-            "w_util": 0.2,
+            "w_cost": 0.1,  # 成本惩罚权重
+            "w_congestion": 1.0,  # 拥堵惩罚权重（替代SLO）
+            "w_stability": 0.1,  # 稳定性奖励权重
+            # 保留旧参数以兼容（但不再使用）
+            "w_slo": 0.0,  # 已废弃
+            "w_switch": 0.0,  # 已废弃
+            "w_util": 0.0,  # 已废弃
             "action_scale_step": 5,
             "action_mig_step": 3,
             "min_instances_per_pool": 1,
@@ -1233,6 +1236,9 @@ class TraceSACSimulator(Simulator):
         self.last_state = state
         self.last_action = action_np
         self.last_action_executed = action_executed
+        # 更新reward_calculator的current_action（用于稳定性奖励计算）
+        if hasattr(self.reward_calculator, 'current_action'):
+            self.reward_calculator.current_action = float(np.mean(action_np))  # 使用平均动作值
         self.decision_step += 1
 
         # 6. 清除快照缓存

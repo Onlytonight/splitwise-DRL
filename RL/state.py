@@ -16,7 +16,9 @@ class RLStateCollector:
         'completed_tokens': 0,
         'completed_prompts': 0,
         'kv_transferred_bytes': 0,
-        'last_rps': 0.0  # 上一次的 RPS 值（用于计算 RPS 差值）
+        'last_rps': 0.0,  # 上一次的 RPS 值（用于计算 RPS 差值）
+        'last_p_queue': 0.0,  # 上一次的 prompt 队列长度（用于计算队列变化率）
+        'last_d_queue': 0.0,  # 上一次的 decoding 队列长度（用于计算队列变化率）
     }
     # 为每个 mode 维护独立的缓存，避免 prompt 和 token collector 共享错误的缓存
     _snapshot_cache = {}  # 改为字典，key 为 mode
@@ -39,6 +41,7 @@ class RLStateCollector:
         "needs_usetime": True,  # 实例使用时间特征
         "needs_timestamp": True,  # 时间戳特征
         "needs_prompt_instance_pending_token": True,  # prompt 实例待处理的 token 归一化值
+        "needs_queue_delta": True,  # 队列变化率特征（当前队列 - 上一次队列）
     }
     
     # 共享特征的名称映射，用于通过 enabled_features 控制
@@ -54,6 +57,7 @@ class RLStateCollector:
         "use_time": "needs_usetime",
         "timestamp": "needs_timestamp",  # 时间戳特征
         "p_ins_pending_token": "needs_prompt_instance_pending_token",  # prompt 实例待处理的 token
+        "queue_delta": "needs_queue_delta",  # 队列变化率特征
     }
 
     _FEATURE_PAIRS = {
@@ -61,11 +65,11 @@ class RLStateCollector:
         "length": ("needs_prompt_len", "needs_output_len", True),
         "queue": ("needs_p_queue", "needs_d_queue", True),
         "utilization": ("needs_util_p", "needs_util_d", True),
-        "slo": ("needs_ttft", "needs_tbt", True),
+        # "slo": ("needs_ttft", "needs_tbt", True),  # 移除SLO特征，作为外部评估标准
         "scaling": ("needs_scaling_prompt", "needs_scaling_token", True),
     }
     
-    # Joint 模式的完整配置（所有特征都启用）
+    # Joint 模式的完整配置（所有特征都启用，但不包括SLO）
     _JOINT_CONFIG = {
         "needs_rps": True,
         "needs_rps_delta": True,
@@ -80,8 +84,8 @@ class RLStateCollector:
         "needs_util_p": True,
         "needs_util_d": True,
         "needs_util_mem": True,
-        "needs_ttft": True,
-        "needs_tbt": True,
+        # "needs_ttft": True,  # 移除SLO特征
+        # "needs_tbt": True,  # 移除SLO特征
         "needs_scaling_prompt": True,
         "needs_scaling_token": True,
         "needs_last_action": True,
@@ -90,6 +94,7 @@ class RLStateCollector:
         "needs_usetime": True,
         "needs_timestamp": True,
         "needs_prompt_instance_pending_token": True,
+        "needs_queue_delta": True,  # 队列变化率特征
     }
     
     @classmethod
@@ -217,7 +222,9 @@ class RLStateCollector:
                 'completed_tokens': 0,
                 'completed_prompts': 0,
                 'kv_transferred_bytes': 0,
-                'last_rps': 0.0  # 上一次的 RPS 值（用于计算 RPS 差值）
+                'last_rps': 0.0,  # 上一次的 RPS 值（用于计算 RPS 差值）
+                'last_p_queue': 0.0,  # 上一次的 prompt 队列长度
+                'last_d_queue': 0.0,  # 上一次的 decoding 队列长度
             }
         else:
             self.last_stats = RLStateCollector._shared_last_stats
@@ -296,6 +303,10 @@ class RLStateCollector:
         sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size, prompt_instance_pending_token = self.get_scheduler_feature()
         n_p, n_t, util_mem_p, util_mem_t, ins_p_queue, ins_d_queue = self.get_instance_feature()
         
+        # 计算队列变化率（当前队列 - 上一次队列）
+        p_queue_delta = sch_p_queue_tokens - stats.get('last_p_queue', 0.0)
+        d_queue_delta = sch_d_queue_tokens - stats.get('last_d_queue', 0.0)
+        
         if cfg["needs_p_queue"]:
             snapshot.append(sch_p_queue_tokens)
         if cfg["needs_d_queue"]:
@@ -304,6 +315,10 @@ class RLStateCollector:
             snapshot.append(wait_time)
         if cfg.get("needs_prompt_instance_pending_token", False):
             snapshot.append(prompt_instance_pending_token)
+        if cfg.get("needs_queue_delta", False):
+            # 队列变化率：正数表示队列在增长（压力增大），负数表示队列在减少（压力减小）
+            snapshot.append(p_queue_delta)
+            snapshot.append(d_queue_delta)
 
         # --- C. 资源状态 (Resources) ---
         # 无论特征配置如何，都需要计算利用率用于奖励计算
@@ -323,22 +338,10 @@ class RLStateCollector:
             snapshot.append(util_mem_t)
 
         # --- D. 性能反馈 (SLO) ---
-        # 无论特征配置如何，都需要获取真实的SLO数据用于奖励计算
-        # 根据 mode 传入参数：prompt 时返回并缓存结果，token 时取缓存结果并清除缓存
+        # 注意：SLO不再作为状态特征，仅用于外部评估
+        # 但仍需要获取none_count等指标用于状态
         ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, prompt_none_count, token_none_count = self.scheduler.get_period_result(mode=self.mode)
-        # print(prompt_none_count,token_none_count)
-        TTFT_SLO = [2, 3, 6]
-        TBT_SLO = [1.25, 1.5, 5]
-
-        # 计算真实的TTFT和TBT比率（用于奖励计算）
-        ttft_rate = [ttft[i] / TTFT_SLO[i] for i in range(len(TTFT_SLO))]
-        tbt_rate = [tbt[i] / TBT_SLO[i] for i in range(len(TBT_SLO))]
-
-        # 只有在特征配置需要时才添加到snapshot
-        if cfg["needs_ttft"]:
-            snapshot.extend(ttft_rate)
-        if cfg["needs_tbt"]:
-            snapshot.extend(tbt_rate)
+        # SLO特征已移除，不再添加到snapshot
 
         # --- E. 扩缩容特征 ---
         scaling_up_prompt, scaling_up_token, draining_prompt, draining_token = self.get_scaling_manager_feature()
@@ -396,13 +399,16 @@ class RLStateCollector:
             'arrival_count': curr_arrivals,
             'completed_tokens': curr_tokens,
             'completed_prompts': curr_prompts,
+            'last_p_queue': sch_p_queue_tokens,  # 更新队列长度用于下次计算delta
+            'last_d_queue': sch_d_queue_tokens,  # 更新队列长度用于下次计算delta
         })
 
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
         # 获取 usetime
         reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft, tbt,
-                        ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time,rps]
-        instance_num = [n_p, n_t, util_p, util_d]
+                        ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time, rps]
+        # instance_num: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
+        instance_num = [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
 
         result = (np.array(snapshot, dtype=np.float32), instance_num, reward_stats, rps)
         
@@ -491,6 +497,20 @@ class RLStateCollector:
             if self.debug_features:
                 feature_names.append("prompt_instance_pending_token")
             idx += 1
+        if cfg.get("needs_queue_delta", False):
+            # 队列变化率：使用tanh归一化，保留符号（正数=增长，负数=减少）
+            p_queue_delta_val = raw_vector[idx]
+            norm_p_queue_delta = np.tanh(p_queue_delta_val / 100.0)  # 假设最大变化在100以内
+            norm_vec.append(norm_p_queue_delta)
+            if self.debug_features:
+                feature_names.append("p_queue_delta")
+            idx += 1
+            d_queue_delta_val = raw_vector[idx]
+            norm_d_queue_delta = np.tanh(d_queue_delta_val / 100.0)
+            norm_vec.append(norm_d_queue_delta)
+            if self.debug_features:
+                feature_names.append("d_queue_delta")
+            idx += 1
 
         # Resource features
         # 实例数量特征（类似 none_count，两个代理都同时包含 n_p 和 n_t）
@@ -524,19 +544,7 @@ class RLStateCollector:
                 feature_names.append("util_mem_t")
             idx += 1
 
-        # SLO features
-        if cfg["needs_ttft"]:
-            for i in range(3):
-                norm_vec.append(np.tanh(raw_vector[idx]))
-                if self.debug_features:
-                    feature_names.append(f"ttft_p{['50', '90', '99'][i]}")
-                idx += 1
-        if cfg["needs_tbt"]:
-            for i in range(3):
-                norm_vec.append(np.tanh(raw_vector[idx]))
-                if self.debug_features:
-                    feature_names.append(f"tbt_p{['50', '90', '99'][i]}")
-                idx += 1
+        # SLO features - 已移除，不再作为状态特征
 
         # Scaling features
         if cfg["needs_scaling_prompt"]:
@@ -846,20 +854,13 @@ class RLStateCollector:
     def feature_dim(self):
         """
         根据模式返回不同的单步特征维度：
-        - joint: 32 (rps + prompt_rate + token_rate + prompt_len + output_len + 
-                     p_queue + d_queue + wait_time + prompt_instance_pending_token + 2*instance_count + util_p + util_d + 
-                     2*util_mem (util_mem_p + util_mem_t) + 3*ttft_rate + 3*tbt_rate + 4*scaling + 
-                     2*none_count + 2*draining + 2*last_action + use_time + timestamp)
-        - prompt: 22 (rps + prompt_rate + prompt_len + p_queue + wait_time + prompt_instance_pending_token + 
-                      2*instance_count + util_p + 2*util_mem (util_mem_p + util_mem_t) + 3*ttft_rate + 2*scaling_prompt + 
-                      2*none_count + 2*draining + 2*last_action + use_time + timestamp)
-        - token: 22 (rps + token_rate + output_len + d_queue + wait_time + prompt_instance_pending_token + 
-                     2*instance_count + util_d + 2*util_mem (util_mem_p + util_mem_t) + 3*tbt_rate + 2*scaling_token + 
-                     2*none_count + 2*draining + 2*last_action + use_time + timestamp)
+        注意：SLO特征已移除，不再作为状态特征（仅用于外部评估）
+        注意：queue_delta特征已添加，用于反映队列变化趋势
         注意：none_count、instance_count、draining、last_action、use_time 和 timestamp 都是共享特征，两个代理都同时包含 prompt 和 token 的值
         注意：util_mem 现在包含两个值：util_mem_p（prompt实例内存利用率）和 util_mem_t（token实例内存利用率）
         注意：draining 包含两个值：draining_prompt（正在缩容的prompt实例数）和 draining_token（正在缩容的token实例数）
         注意：prompt_instance_pending_token 是 prompt 实例待处理的 token 归一化值
+        注意：queue_delta 包含两个值：p_queue_delta（prompt队列变化率）和 d_queue_delta（decoding队列变化率）
         """
         cfg = self.feature_config
         dim = 0
@@ -889,6 +890,8 @@ class RLStateCollector:
             dim += 1
         if cfg.get("needs_prompt_instance_pending_token", False):
             dim += 1
+        if cfg.get("needs_queue_delta", False):
+            dim += 2  # p_queue_delta 和 d_queue_delta
         
         # Resource
         # 实例数量特征（类似 none_count，两个代理都同时包含两个值）
@@ -901,11 +904,7 @@ class RLStateCollector:
         if cfg["needs_util_mem"]:
             dim += 2  # util_mem_p 和 util_mem_t
         
-        # SLO
-        if cfg["needs_ttft"]:
-            dim += 3
-        if cfg["needs_tbt"]:
-            dim += 3
+        # SLO - 已移除，不再作为状态特征
         
         # Scaling
         if cfg["needs_scaling_prompt"]:
