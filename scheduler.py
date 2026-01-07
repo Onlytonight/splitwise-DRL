@@ -1061,7 +1061,9 @@ class MixedPoolScheduler(KVScheduler):
         else:
             total_time = 0
         avg_prompt_size = total_pending_prompt_queue_length/len(self.pending_queue) if len(self.pending_queue) > 0 else 0
-        return total_pending_prompt_queue_length, total_pending_tokens, total_time,avg_prompt_size
+        prompt_instance_pending_token=sum(ins.sched_pending_tokens / self.prompt_max_pending_batch_tokens for ins in self.prompt_instances)
+
+        return total_pending_prompt_queue_length, total_pending_tokens, total_time,avg_prompt_size,prompt_instance_pending_token
 
     def get_period_result(self, mode=None):
         """

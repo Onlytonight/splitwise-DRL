@@ -728,10 +728,11 @@ class TraceSACSimulator(Simulator):
         self.arbiter = arbiter
         self.decision_interval = 2  # 决策间隔（秒）
 
-        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta']
+        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
+                                 "length","slo","rate","util_mem",'draining',"p_ins_pending_token"]
         self.rl_config = {
-            "w_cost": 0.5,
-            "w_slo": 0.55,
+            "w_cost": 0.4,
+            "w_slo": 0.6,
             "w_switch": 0.1,
             "w_util": 0.2,
             "action_scale_step": 5,
@@ -743,11 +744,11 @@ class TraceSACSimulator(Simulator):
         }
 
         # SAC 超参数
-        self.layer_size = 128  # 网络隐藏层大小
+        self.layer_size = 256  # 网络隐藏层大小
         self.replay_buffer_size = int(1E6)
         self.batch_size = 256
-        self.train_freq = 5  #
-        self.min_steps_before_training = 4096  # 开始训练前的最小步数
+        self.train_freq = 1
+        self.min_steps_before_training = 10000  # 开始训练前的最小步数
         self.save_model_freq = 1000
 
         rl_config = self.rl_config

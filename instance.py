@@ -68,7 +68,7 @@ class Instance():
         self.sched_memory = self.model.size.total_size
         self.sched_pending_tokens = 0
         self.sched_tag = None
-        
+
         ## scaling management
         self.scaling_status = None  # 由 ScalingManager 管理，值为 InstanceStatus 枚举
         
@@ -139,7 +139,7 @@ class Instance():
         self.batch.remove(task)
         self.completed_queue.append(task)
         task.executor.finish_task(task, self)
-        
+
         # 如果没有更多任务，停止追踪忙碌时间
         if len(self.pending_queue) == 0:
             if self.last_busy_start is not None:
