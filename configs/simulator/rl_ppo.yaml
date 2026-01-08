@@ -1,0 +1,51 @@
+# PPO强化学习算法配置
+algorithm: ppo
+
+# 决策参数
+decision_interval: 2  # 决策间隔（秒）
+
+# 状态特征配置
+enabled_features:
+  - queue
+  - none_count
+  - instance_count
+
+stack_size: 4  # 状态堆叠的时间窗大小
+debug_features: false  # 是否启用调试特征
+
+# 奖励函数权重
+reward_weights:
+  w_cost: 0.5      # 成本惩罚权重
+  w_slo: 0.5       # SLO违反惩罚权重
+  w_switch: 0.1    # 动作切换惩罚
+  w_util: 0.2      # 利用率权重
+
+# 动作执行参数
+action_scale_step: 5
+action_mig_step: 3
+min_instances_per_pool: 1
+max_total_instances: 100
+
+# PPO网络超参数
+network:
+  hidden_dim: 64  # 神经网络隐藏层维度
+
+# PPO训练超参数
+training:
+  has_continuous_action_space: true
+  action_std: 0.6              # 初始动作方差
+  action_std_decay_rate: 0.05
+  min_action_std: 0.1
+  action_std_decay_freq: 1000  # 动作方差衰减频率
+  
+  update_timestep: 10          # 每多少个决策步更新一次网络
+  K_epochs: 40                 # 每次更新时的epoch数
+  eps_clip: 0.2                # PPO裁剪参数
+  gamma: 0.99                  # 折扣因子
+  lr_actor: 0.0003             # Actor学习率
+  lr_critic: 0.001             # Critic学习率
+
+# 模型保存
+save_model_freq: 1000          # 保存模型频率（每多少步）
+checkpoint_dir: cp             # checkpoint保存目录
+

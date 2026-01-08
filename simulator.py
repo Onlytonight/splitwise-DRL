@@ -234,31 +234,42 @@ class TraceRLSimulator(Simulator):
                  applications,
                  router,
                  arbiter,
-                 end_time):  # <--- 新增参数：决策间隔（例如10秒）
+                 end_time,
+                 simulator_cfg=None):
         super().__init__(end_time)
         self.trace = trace
         self.cluster = cluster
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
-        self.decision_interval = 2  # 保存间隔
-        # self.enabled_features =["rate", "length", "queue", "instance_count", "utilization", "scaling","slo"]
-        self.enabled_features=["queue","none_count", "instance_count"]
+        
+        # 从配置文件读取参数（如果没有提供则使用默认值）
+        if simulator_cfg is None:
+            simulator_cfg = {}
+        
+        # 决策间隔
+        self.decision_interval = simulator_cfg.get("decision_interval", 2)
+        
+        # 特征配置
+        self.enabled_features = simulator_cfg.get("enabled_features",
+            ["queue", "none_count", "instance_count"])
+        self.stack_size = simulator_cfg.get("stack_size", 4)
+        debug_features = simulator_cfg.get("debug_features", False)
+        
+        # 奖励权重配置
+        reward_weights = simulator_cfg.get("reward_weights", {})
         self.rl_config = {
-            "w_cost": 0.5,
-            "w_slo": 0.5,
-            "w_switch": 0.1,
-            "w_util": 0.2,
-            "action_scale_step": 5,
-            "action_mig_step": 3,
-            "min_instances_per_pool": 1,
-            "max_total_instances": 100,
-            "stack_size": 4  # 状态堆叠的时间窗大小
+            "w_cost": reward_weights.get("w_cost", 0.5),
+            "w_slo": reward_weights.get("w_slo", 0.5),
+            "w_switch": reward_weights.get("w_switch", 0.1),
+            "w_util": reward_weights.get("w_util", 0.2),
+            "action_scale_step": simulator_cfg.get("action_scale_step", 5),
+            "action_mig_step": simulator_cfg.get("action_mig_step", 3),
+            "min_instances_per_pool": simulator_cfg.get("min_instances_per_pool", 1),
+            "max_total_instances": simulator_cfg.get("max_total_instances", 100),
+            "stack_size": self.stack_size
         }
         rl_config = self.rl_config
-        
-        # 从配置中获取 stack_size，默认为 4
-        self.stack_size = self.rl_config.get("stack_size", 4)
 
         # 用于保存上一次决策时的统计快照，用于计算区间内的速率（Rate）
         # prompt / token 两个 RL 代理分别使用各自的状态收集器
@@ -299,20 +310,29 @@ class TraceRLSimulator(Simulator):
             config=rl_config,  # 从配置中读取步长等参数
         )
 
-        # --- PPO Hyperparameters (从你的代码中提取并简化) ---
-        self.has_continuous_action_space = True
-        self.action_std = 0.6  # 初始动作方差
-        self.action_std_decay_rate = 0.05
-        self.min_action_std = 0.1
-        self.action_std_decay_freq = 1000 #一万步学习完
-
-        self.update_timestep = 10  # 每多少个决策步更新一次网络
-        self.K_epochs = 40
-        self.eps_clip = 0.2
-        self.gamma = 0.99
-        self.lr_actor = 0.0003
-        self.lr_critic = 0.001
-        self.hidden_dim = 64  # 神经网络隐藏层维度
+        # --- PPO Hyperparameters ---
+        # 从配置文件读取网络超参数
+        network_cfg = simulator_cfg.get("network", {})
+        self.hidden_dim = network_cfg.get("hidden_dim", 64)
+        
+        # 从配置文件读取训练超参数
+        training_cfg = simulator_cfg.get("training", {})
+        self.has_continuous_action_space = training_cfg.get("has_continuous_action_space", True)
+        self.action_std = training_cfg.get("action_std", 0.6)
+        self.action_std_decay_rate = training_cfg.get("action_std_decay_rate", 0.05)
+        self.min_action_std = training_cfg.get("min_action_std", 0.1)
+        self.action_std_decay_freq = training_cfg.get("action_std_decay_freq", 1000)
+        
+        self.update_timestep = training_cfg.get("update_timestep", 10)
+        self.K_epochs = training_cfg.get("K_epochs", 40)
+        self.eps_clip = training_cfg.get("eps_clip", 0.2)
+        self.gamma = training_cfg.get("gamma", 0.99)
+        self.lr_actor = training_cfg.get("lr_actor", 0.0003)
+        self.lr_critic = training_cfg.get("lr_critic", 0.001)
+        
+        # 模型保存频率和目录
+        self.save_model_freq = simulator_cfg.get("save_model_freq", 1000)
+        self.checkpoint_dir = simulator_cfg.get("checkpoint_dir", "cp")
 
         # --- 初始化两个 PPO Agent ---
         prompt_state_dim = self.prompt_collector.feature_dim * self.prompt_collector.stack_size
@@ -355,7 +375,6 @@ class TraceRLSimulator(Simulator):
         self.last_token_action_executed = True
         self.last_prompt_action = 0.0  # 上一次 prompt 动作值
         self.last_token_action = 0.0  # 上一次 token 动作值
-        self.save_model_freq = 1000  # 保存模型频率
         self.finish_training = False
 
         # 在初始化时创建 RewardRecorder 实例，整个训练过程复用
@@ -584,7 +603,7 @@ class TraceRLSimulator(Simulator):
             )
 
         if self.decision_step % self.save_model_freq == 0 and self.decision_step > 0:
-            cp_dir = "cp"
+            cp_dir = self.checkpoint_dir
             os.makedirs(cp_dir, exist_ok=True)
             import datetime
 
@@ -720,45 +739,80 @@ class TraceSACSimulator(Simulator):
                  router,
                  arbiter,
                  end_time,
-                 model_path: str = None):
+                 model_path: str = None,
+                 simulator_cfg=None):
         super().__init__(end_time)
         self.trace = trace
         self.cluster = cluster
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
-        self.decision_interval = 2  # 决策间隔（秒）
-
-        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
-                                 "length","rate","util_mem",'draining',"p_ins_pending_token","queue_delta"]
+        
+        # 从配置文件读取参数（如果没有提供则使用默认值）
+        if simulator_cfg is None:
+            # 默认配置（保持向后兼容）
+            simulator_cfg = {}
+        
+        # 决策间隔
+        self.decision_interval = simulator_cfg.get("decision_interval", 2)
+        
+        # 特征配置
+        self.enabled_features = simulator_cfg.get("enabled_features", 
+            ["queue", "none_count", "instance_count", 'timestamp', 'rps', 'rps_delta',
+             "length", "rate", "util_mem", 'draining', "p_ins_pending_token", "queue_delta"])
+        self.stack_size = simulator_cfg.get("stack_size", 1)
+        debug_features = simulator_cfg.get("debug_features", False)
+        
+        # 奖励权重配置
+        reward_weights = simulator_cfg.get("reward_weights", {})
         self.rl_config = {
-            "w_cost": 0.1,  # 成本惩罚权重
-            "w_queue": 1.5,  # 队列惩罚权重（目标：队列数为0）
-            # 保留旧参数以兼容（但不再使用）
-            "w_congestion": 1.0,  # 已废弃，使用w_queue
-            "w_stability": 0.0,  # 已废弃
-            "w_slo": 0.0,  # 已废弃
-            "w_switch": 0.0,  # 已废弃
-            "w_util": 1.0,  # 已废弃
-            "action_scale_step": 5,
-            "action_mig_step": 3,
-            "min_instances_per_pool": 1,
-            "max_total_instances": 100,
-            "stack_size": 1,
-            "debug_features":False
+            "w_cost": reward_weights.get("w_cost", 0.1),
+            "w_queue": reward_weights.get("w_queue", 1.0),
+            "w_congestion": reward_weights.get("w_congestion", 1.0),
+            "w_stability": reward_weights.get("w_stability", 0.0),
+            "w_slo": reward_weights.get("w_slo", 0.0),
+            "w_switch": reward_weights.get("w_switch", 0.0),
+            "w_util": reward_weights.get("w_util", 1.0),
+            "action_scale_step": simulator_cfg.get("action_scale_step", 5),
+            "action_mig_step": simulator_cfg.get("action_mig_step", 3),
+            "min_instances_per_pool": simulator_cfg.get("min_instances_per_pool", 1),
+            "max_total_instances": simulator_cfg.get("max_total_instances", 100),
+            "stack_size": self.stack_size,
+            "debug_features": debug_features
         }
 
-        # SAC 超参数
-        self.layer_size = 256  # 网络隐藏层大小
-        self.replay_buffer_size = int(1E6)
-        self.batch_size = 256
-        self.train_freq = 30
-        self.min_steps_before_training = 10000  # 开始训练前的最小步数
-        self.save_model_freq = 1000
+        # SAC 网络超参数
+        network_cfg = simulator_cfg.get("network", {})
+        self.layer_size = network_cfg.get("layer_size", 256)
+        
+        # SAC 训练超参数
+        training_cfg = simulator_cfg.get("training", {})
+        self.replay_buffer_size = training_cfg.get("replay_buffer_size", int(1E6))
+        self.batch_size = training_cfg.get("batch_size", 256)
+        self.train_freq = training_cfg.get("train_freq", 30)
+        self.min_steps_before_training = training_cfg.get("min_steps_before_training", 1000)
+        self.save_model_freq = simulator_cfg.get("save_model_freq", 1000)
+        
+        # SAC trainer 参数
+        self.discount = training_cfg.get("discount", 0.99)
+        self.soft_target_tau = training_cfg.get("soft_target_tau", 5e-3)
+        self.target_update_period = training_cfg.get("target_update_period", 1)
+        self.policy_lr = training_cfg.get("policy_lr", 3E-4)
+        self.qf_lr = training_cfg.get("qf_lr", 3E-4)
+        self.reward_scale = training_cfg.get("reward_scale", 1)
+        self.use_automatic_entropy_tuning = training_cfg.get("use_automatic_entropy_tuning", True)
+        
+        # 优先经验回放参数
+        prioritized_cfg = simulator_cfg.get("prioritized_replay", {})
+        self.per_alpha = prioritized_cfg.get("alpha", 0.6)
+        self.per_beta = prioritized_cfg.get("beta", 0.4)
+        self.per_beta_increment = prioritized_cfg.get("beta_increment_per_sampling", 1e-3)
+        self.per_eps = prioritized_cfg.get("eps", 1e-6)
+        
+        # checkpoint 目录
+        self.checkpoint_dir = simulator_cfg.get("checkpoint_dir", "cp")
 
         rl_config = self.rl_config
-        self.stack_size = self.rl_config.get("stack_size", 1)
-        debug_features = self.rl_config.get("debug_features", False)
 
         self.state_collector = RLStateCollector(
             cluster=cluster,
@@ -837,13 +891,13 @@ class TraceSACSimulator(Simulator):
             qf2=self.qf2,
             target_qf1=self.target_qf1,
             target_qf2=self.target_qf2,
-            discount=0.99,
-            soft_target_tau=5e-3,
-            target_update_period=1,
-            policy_lr=3E-4,
-            qf_lr=3E-4,
-            reward_scale=1,
-            use_automatic_entropy_tuning=True,
+            discount=self.discount,
+            soft_target_tau=self.soft_target_tau,
+            target_update_period=self.target_update_period,
+            policy_lr=self.policy_lr,
+            qf_lr=self.qf_lr,
+            reward_scale=self.reward_scale,
+            use_automatic_entropy_tuning=self.use_automatic_entropy_tuning,
         )
 
         # 创建经验回放缓冲区
@@ -854,10 +908,10 @@ class TraceSACSimulator(Simulator):
             action_dim=action_dim,
             env_info_sizes={},
             replace=True,
-            alpha=0.6,
-            beta=0.4,
-            beta_increment_per_sampling=1e-3,
-            eps=1e-6,
+            alpha=self.per_alpha,
+            beta=self.per_beta,
+            beta_increment_per_sampling=self.per_beta_increment,
+            eps=self.per_eps,
         )
 
         # 初始化GPU设备（如果可用）
@@ -1203,7 +1257,7 @@ class TraceSACSimulator(Simulator):
         # 4. 保存模型（仿真评估模式下不再定时保存模型）
         if (not self.eval_only and
             self.decision_step % self.save_model_freq == 0 and self.decision_step > 0):
-            cp_dir = "cp"
+            cp_dir = self.checkpoint_dir
             os.makedirs(cp_dir, exist_ok=True)
             import datetime
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

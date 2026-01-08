@@ -1,0 +1,73 @@
+# SAC强化学习算法配置
+algorithm: sac
+
+# 决策参数
+decision_interval: 2  # 决策间隔（秒）
+
+# 状态特征配置
+enabled_features:
+  - queue
+  - none_count
+  - instance_count
+  - timestamp
+  - rps
+  - rps_delta
+  - length
+  - rate
+  - util_mem
+  - draining
+  - p_ins_pending_token
+  - queue_delta
+
+stack_size: 1  # 状态堆叠的时间窗大小
+debug_features: false  # 是否启用调试特征
+
+# 奖励函数权重
+reward_weights:
+  w_cost: 0.1      # 成本惩罚权重
+  w_queue: 1.0     # 队列惩罚权重（目标：队列数为0）
+  w_util: 1.0      # 利用率权重
+  # 保留旧参数以兼容（已废弃）
+  w_congestion: 1.0
+  w_stability: 0.0
+  w_slo: 0.0
+  w_switch: 0.0
+
+# 动作执行参数
+action_scale_step: 5
+action_mig_step: 3
+min_instances_per_pool: 1
+max_total_instances: 100
+
+# SAC网络超参数
+network:
+  layer_size: 256  # 网络隐藏层大小
+
+# SAC训练超参数
+training:
+  replay_buffer_size: 1000000  # 经验回放缓冲区大小
+  batch_size: 256              # 批量大小
+  train_freq: 30               # 训练频率（每多少步训练一次）
+  min_steps_before_training: 1000  # 开始训练前的最小步数
+  discount: 0.99               # 折扣因子
+  soft_target_tau: 0.005       # 软目标更新系数
+  target_update_period: 1      # 目标网络更新周期
+  policy_lr: 0.0003            # 策略网络学习率
+  qf_lr: 0.0003                # Q网络学习率
+  reward_scale: 1              # 奖励缩放
+  use_automatic_entropy_tuning: true  # 是否使用自动熵调节
+
+# 优先经验回放参数
+prioritized_replay:
+  alpha: 0.6                   # 优先级指数
+  beta: 0.4                    # 重要性采样初始值
+  beta_increment_per_sampling: 0.001  # beta增量
+  eps: 0.000001                # 防止除零的小值
+
+# 模型保存
+save_model_freq: 1000          # 保存模型频率（每多少步）
+checkpoint_dir: cp             # checkpoint保存目录
+
+# 仿真评估模式（如果指定了model_path则为true）
+# eval_only: false  # 是否仅评估模式（不训练）
+

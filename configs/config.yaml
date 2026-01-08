@@ -10,14 +10,20 @@ defaults:
   - applications: solo
   - trace: test_trace
   - start_state: orca
+  - simulator: rl_sac
   - override hydra/launcher: ray
   - _self_
 
 end_time: 86400
 debug: False
 seed: 0
+
+# RL 仿真器配置说明:
+# - 使用 simulator=rl_sac 选择 SAC 算法（默认）
+# - 使用 simulator=rl_ppo 选择 PPO 算法
+# - 可以通过命令行覆盖参数，例如: simulator.decision_interval=5
 trace_list:
-  - traces/burst_144/day_30.csv
+  - traces/burst_144/day_28.csv
 #  - traces/rr_conv_30_50.csv
 
 trace_epochs: 1  # 单个 trace 的循环次数（当使用 trace_list 时，此参数用于控制整个列表的循环次数）
