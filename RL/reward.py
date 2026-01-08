@@ -33,7 +33,7 @@ class RLRewardCalculator:
         self.w_stability = config.get("w_stability", 0.0)  # 已废弃
         self.w_slo = config.get("w_slo", 0.0)  # 已废弃
         self.w_switch = config.get("w_switch", 0.0)  # 已废弃
-        self.w_util = config.get("w_util", 0.0)  # 已废弃
+        self.w_util = config.get("w_util", 0.0)  # 利用率惩罚权重
 
         # 2. 硬件成本参数
         self.price_p = 1.0  # Prefill 机器 (基准价格)
@@ -43,12 +43,20 @@ class RLRewardCalculator:
         # 3. 状态记忆（简化，不再需要）
         self.last_instances = {'p': 0, 't': 0}
 
+        # 4. 拥堵惩罚阈值
+        self.PENDING_TOKEN_THRESHOLD = 100.0  # prompt实例待处理token的阈值
+        self.UTIL_MEM_THRESHOLD = 0.8  # 内存利用率过载预警阈值
+
     def calculate_reward(self, cluster, applications, raw_stats, instance_num, action_executed=True, step=0):
         """
         简化的奖励函数：只考虑队列和成本
         目标：队列数为0的情况下成本最低
         
-        :param raw_stats: [prompt_rate, token_rate, sch_p_queue, sch_d_queue, n_p, n_t, 
+        :param action_executed:
+        :param cluster:
+        :param applications:
+        :param instance_num:
+        :param raw_stats: [prompt_rate, token_rate, sch_p_queue, sch_d_queue, n_p, n_t,
                           avg_prompt_size, ttft, tbt, ins_p_queue, ins_d_queue, 
                           avg_queue_time, avg_nth_token_overhead, use_time, rps]
         """
@@ -68,25 +76,35 @@ class RLRewardCalculator:
         # -------------------------------------------------------------
         # 2. 队列惩罚 (Queue Penalty) - 核心信号
         # -------------------------------------------------------------
-        # 只考虑调度器队列（sch_p_queue 和 sch_d_queue）
+        # A. 队列存在惩罚
         q_prompt = raw_stats[2]  # 调度器中的prompt队列
         q_decoding = raw_stats[3]  # 调度器中的decoding队列
-        
-        # 根据mode选择关注的队列
-        if self.mode == "prompt":
-            # 只关注prompt队列，使用log1p平滑惩罚
-            queue_penalty = -self.w_queue * np.log1p(q_prompt + 1)
-        elif self.mode == "token":
-            # 只关注decoding队列
-            queue_penalty = -self.w_queue * np.log1p(q_decoding + 1)
-        else:
-            # joint模式：两个队列都考虑
-            queue_penalty = -self.w_queue * (np.log1p(q_prompt + 1) + np.log1p(q_decoding + 1))
-        
+
+
+        queue_penalty =  np.log1p( q_decoding)+ np.log1p( q_decoding)
+        queue_penalty*=-self.w_queue
+
+        # C. 利用率过载预警（从instance_num获取）
+        # instance_num格式: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
+        util_p, util_d = instance_num[2], instance_num[3]
+        util_mem_p = instance_num[4] if len(instance_num) > 4 else 0.0
+        util_mem_t = instance_num[5] if len(instance_num) > 5 else 0.0
+
+        # 如果内存利用率过高，给予惩罚
+        overload_penalty = 0.0
+        if util_mem_p > self.UTIL_MEM_THRESHOLD:
+            overload_penalty -= self.w_util * (util_mem_p - self.UTIL_MEM_THRESHOLD) * 10.0
+        if util_mem_t > self.UTIL_MEM_THRESHOLD:
+            overload_penalty -= self.w_util * (util_mem_t - self.UTIL_MEM_THRESHOLD) * 10.0
+
+        congestion_penalty = queue_penalty  + overload_penalty
+
         # -------------------------------------------------------------
-        # 3. 总奖励 = 成本惩罚 + 队列惩罚
+        # 4. 总奖励
         # -------------------------------------------------------------
-        reward = cost_penalty + queue_penalty
+        reward = cost_penalty + congestion_penalty
+
+
         
         # 更新状态记忆
         self.last_instances = {'p': n_p, 't': n_t}

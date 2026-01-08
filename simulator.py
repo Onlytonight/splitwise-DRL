@@ -727,19 +727,19 @@ class TraceSACSimulator(Simulator):
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
-        self.decision_interval = 2  # 决策间隔（秒）
+        self.decision_interval = 1  # 决策间隔（秒）
 
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
                                  "length","rate","util_mem",'draining',"p_ins_pending_token","queue_delta"]
         self.rl_config = {
             "w_cost": 0.1,  # 成本惩罚权重
-            "w_queue": 2.0,  # 队列惩罚权重（目标：队列数为0）
+            "w_queue": 3.0,  # 队列惩罚权重（目标：队列数为0）
             # 保留旧参数以兼容（但不再使用）
             "w_congestion": 1.0,  # 已废弃，使用w_queue
             "w_stability": 0.0,  # 已废弃
             "w_slo": 0.0,  # 已废弃
             "w_switch": 0.0,  # 已废弃
-            "w_util": 0.0,  # 已废弃
+            "w_util": 1.0,  # 已废弃
             "action_scale_step": 5,
             "action_mig_step": 3,
             "min_instances_per_pool": 1,
