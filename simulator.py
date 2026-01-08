@@ -727,7 +727,7 @@ class TraceSACSimulator(Simulator):
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
-        self.decision_interval = 1  # 决策间隔（秒）
+        self.decision_interval = 2  # 决策间隔（秒）
 
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
                                  "length","rate","util_mem",'draining',"p_ins_pending_token","queue_delta"]
