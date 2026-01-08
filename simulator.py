@@ -733,7 +733,7 @@ class TraceSACSimulator(Simulator):
                                  "length","rate","util_mem",'draining',"p_ins_pending_token","queue_delta"]
         self.rl_config = {
             "w_cost": 0.1,  # 成本惩罚权重
-            "w_queue": 3.0,  # 队列惩罚权重（目标：队列数为0）
+            "w_queue": 1.5,  # 队列惩罚权重（目标：队列数为0）
             # 保留旧参数以兼容（但不再使用）
             "w_congestion": 1.0,  # 已废弃，使用w_queue
             "w_stability": 0.0,  # 已废弃
