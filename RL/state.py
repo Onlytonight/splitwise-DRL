@@ -404,9 +404,10 @@ class RLStateCollector:
         })
 
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
-        # 获取 usetime
+        # 添加队列差值用于奖励计算
         reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft, tbt,
-                        ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time, rps]
+                        ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time, rps,
+                        p_queue_delta, d_queue_delta]  # 添加队列差值
         # instance_num: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
         instance_num = [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
 

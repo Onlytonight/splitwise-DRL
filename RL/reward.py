@@ -40,8 +40,9 @@ class RLRewardCalculator:
         self.price_t = 1.0  # 假设都是用同样的机器
         self.max_instances = max_instances
 
-        # 3. 状态记忆（简化，不再需要）
+        # 3. 状态记忆
         self.last_instances = {'p': 0, 't': 0}
+        self.last_queue_delta = {'p': 0.0, 't': 0.0}  # 记录上一次的队列差值，用于计算导数
 
         # 4. 拥堵惩罚阈值
         self.PENDING_TOKEN_THRESHOLD = 100.0  # prompt实例待处理token的阈值
@@ -76,15 +77,44 @@ class RLRewardCalculator:
         # -------------------------------------------------------------
         # 2. 队列惩罚 (Queue Penalty) - 核心信号
         # -------------------------------------------------------------
-        # A. 队列存在惩罚
+        # A. 队列存在惩罚（使用队列的绝对值）
         q_prompt = raw_stats[2]  # 调度器中的prompt队列
         q_decoding = raw_stats[3]  # 调度器中的decoding队列
 
+        # # 修复bug：原来两次都用了 q_decoding
+        # queue_absolute_penalty = -(np.log1p(q_prompt) + np.log1p(q_decoding)) * self.w_queue
 
-        queue_penalty =  np.log1p( q_decoding)+ np.log1p( q_decoding)
-        queue_penalty*=-self.w_queue
+        # B. 队列差值惩罚（使用队列的变化量）
+        # raw_stats 格式已更新，包含队列差值（在最后两个位置）
+        p_queue_delta = raw_stats[15] if len(raw_stats) > 15 else 0.0  # prompt队列差值
+        d_queue_delta = raw_stats[16] if len(raw_stats) > 16 else 0.0  # decoding队列差值
 
-        # C. 利用率过载预警（从instance_num获取）
+        # 队列差值惩罚：正值表示队列增长（需要惩罚），负值表示队列减少（给予奖励）
+        # 改用 log(1+abs(x))，并保留符号
+        queue_delta_penalty = -(
+            np.sign(p_queue_delta) * np.log1p(abs(p_queue_delta)) + 
+            np.sign(d_queue_delta) * np.log1p(abs(d_queue_delta))
+        ) * self.w_queue
+
+        # C. 队列导数惩罚（队列变化的加速度）
+        # 导数 = 当前差值 - 上一次差值
+        p_queue_derivative = p_queue_delta - self.last_queue_delta['p']
+        d_queue_derivative = d_queue_delta - self.last_queue_delta['t']
+
+        # 队列导数惩罚：正值表示队列增长加速（更严重），负值表示队列增长减速（好转）
+        # 改用 log(1+abs(x))，并保留符号
+        queue_derivative_penalty = -(
+            np.sign(p_queue_derivative) * np.log1p(abs(p_queue_derivative)) + 
+            np.sign(d_queue_derivative) * np.log1p(abs(d_queue_derivative))
+        ) * self.w_queue
+
+        # 更新上一次的队列差值
+        self.last_queue_delta = {'p': p_queue_delta, 't': d_queue_delta}
+
+        # D. 综合队列惩罚
+        queue_penalty =  queue_delta_penalty + queue_derivative_penalty
+
+        # E. 利用率过载预警（从instance_num获取）
         # instance_num格式: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
         util_p, util_d = instance_num[2], instance_num[3]
         util_mem_p = instance_num[4] if len(instance_num) > 4 else 0.0
@@ -97,13 +127,29 @@ class RLRewardCalculator:
         if util_mem_t > self.UTIL_MEM_THRESHOLD:
             overload_penalty -= self.w_util * (util_mem_t - self.UTIL_MEM_THRESHOLD) * 10.0
 
-        congestion_penalty = queue_penalty  + overload_penalty
+        congestion_penalty = queue_penalty + overload_penalty
 
         # -------------------------------------------------------------
         # 4. 总奖励
         # -------------------------------------------------------------
         reward = cost_penalty + congestion_penalty
 
+        # ======== 打印详细信息 ========
+        print(f"Step详细信息：")
+        print(f"  模式(mode): {self.mode}")
+        print(f"  实例数 n_p: {n_p}, n_t: {n_t}")
+        print(f"  调度器队列 q_prompt: {q_prompt}, q_decoding: {q_decoding}")
+        print(f"  队列差值 p_delta: {p_queue_delta:.2f}, d_delta: {d_queue_delta:.2f}")
+        print(f"  队列导数 p_deriv: {p_queue_derivative:.2f}, d_deriv: {d_queue_derivative:.2f}")
+        print(f"  cost_score: {cost_score}")
+        print(f"  成本惩罚 cost_penalty: {cost_penalty:.4f}")
+        print(f"  队列差值惩罚 queue_delta_penalty: {queue_delta_penalty:.4f}")
+        print(f"  队列导数惩罚 queue_derivative_penalty: {queue_derivative_penalty:.4f}")
+        print(f"  队列总惩罚 queue_penalty: {queue_penalty:.4f}")
+        print(f"  util_p: {util_p:.2f}, util_d: {util_d:.2f}, util_mem_p: {util_mem_p:.2f}, util_mem_t: {util_mem_t:.2f}")
+        print(f"  overload_penalty: {overload_penalty:.4f}")
+        print(f"  总惩罚 congestion_penalty: {congestion_penalty:.4f}")
+        print(f"  ==> 总奖励 reward: {reward:.4f}")
 
         
         # 更新状态记忆
@@ -120,7 +166,11 @@ class RLRewardCalculator:
             'reward': reward,
             'cost_score': cost_score,
             'cost_penalty': cost_penalty,
+            'queue_delta_penalty': queue_delta_penalty,
+            'queue_derivative_penalty': queue_derivative_penalty,
             'queue_penalty': queue_penalty,
+            'congestion_penalty': congestion_penalty,
+            'overload_penalty': overload_penalty,
             'n_p': n_p,
             'n_t': n_t,
             # 保留SLO信息用于外部评估（不参与奖励计算）
@@ -132,6 +182,10 @@ class RLRewardCalculator:
             'tbt_p99': raw_stats[8][2] if len(raw_stats) > 8 else 0,
             'p_queue_len': q_prompt,
             't_queue_len': q_decoding,
+            'p_queue_delta': p_queue_delta,
+            't_queue_delta': d_queue_delta,
+            'p_queue_derivative': p_queue_derivative,
+            't_queue_derivative': d_queue_derivative,
             'instance_p_queue_len': ins_p_queue,
             'instance_t_queue_len': ins_d_queue,
             'use_time': raw_stats[13] if len(raw_stats) > 13 else 0,
@@ -279,6 +333,7 @@ class RLRewardCalculator:
     def reset(self):
         """重置内部状态 (每个 Episode 开始时调用)"""
         self.last_instances = {'p': 0, 't': 0}
+        self.last_queue_delta = {'p': 0.0, 't': 0.0}
 
     def get_slo_reward(self, ttft, tbt):
         """
