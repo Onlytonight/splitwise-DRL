@@ -134,22 +134,22 @@ class RLRewardCalculator:
         # -------------------------------------------------------------
         reward = cost_penalty + congestion_penalty
 
-        # ======== 打印详细信息 ========
-        print(f"Step详细信息：")
-        print(f"  模式(mode): {self.mode}")
-        print(f"  实例数 n_p: {n_p}, n_t: {n_t}")
-        print(f"  调度器队列 q_prompt: {q_prompt}, q_decoding: {q_decoding}")
-        print(f"  队列差值 p_delta: {p_queue_delta:.2f}, d_delta: {d_queue_delta:.2f}")
-        print(f"  队列导数 p_deriv: {p_queue_derivative:.2f}, d_deriv: {d_queue_derivative:.2f}")
-        print(f"  cost_score: {cost_score}")
-        print(f"  成本惩罚 cost_penalty: {cost_penalty:.4f}")
-        print(f"  队列差值惩罚 queue_delta_penalty: {queue_delta_penalty:.4f}")
-        print(f"  队列导数惩罚 queue_derivative_penalty: {queue_derivative_penalty:.4f}")
-        print(f"  队列总惩罚 queue_penalty: {queue_penalty:.4f}")
-        print(f"  util_p: {util_p:.2f}, util_d: {util_d:.2f}, util_mem_p: {util_mem_p:.2f}, util_mem_t: {util_mem_t:.2f}")
-        print(f"  overload_penalty: {overload_penalty:.4f}")
-        print(f"  总惩罚 congestion_penalty: {congestion_penalty:.4f}")
-        print(f"  ==> 总奖励 reward: {reward:.4f}")
+        # # ======== 打印详细信息 ========
+        # print(f"Step详细信息：")
+        # print(f"  模式(mode): {self.mode}")
+        # print(f"  实例数 n_p: {n_p}, n_t: {n_t}")
+        # print(f"  调度器队列 q_prompt: {q_prompt}, q_decoding: {q_decoding}")
+        # print(f"  队列差值 p_delta: {p_queue_delta:.2f}, d_delta: {d_queue_delta:.2f}")
+        # print(f"  队列导数 p_deriv: {p_queue_derivative:.2f}, d_deriv: {d_queue_derivative:.2f}")
+        # print(f"  cost_score: {cost_score}")
+        # print(f"  成本惩罚 cost_penalty: {cost_penalty:.4f}")
+        # print(f"  队列差值惩罚 queue_delta_penalty: {queue_delta_penalty:.4f}")
+        # print(f"  队列导数惩罚 queue_derivative_penalty: {queue_derivative_penalty:.4f}")
+        # print(f"  队列总惩罚 queue_penalty: {queue_penalty:.4f}")
+        # print(f"  util_p: {util_p:.2f}, util_d: {util_d:.2f}, util_mem_p: {util_mem_p:.2f}, util_mem_t: {util_mem_t:.2f}")
+        # print(f"  overload_penalty: {overload_penalty:.4f}")
+        # print(f"  总惩罚 congestion_penalty: {congestion_penalty:.4f}")
+        # print(f"  ==> 总奖励 reward: {reward:.4f}")
 
         
         # 更新状态记忆
