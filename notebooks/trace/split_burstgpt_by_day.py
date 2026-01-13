@@ -6,7 +6,7 @@ from collections import defaultdict
 input_file = 'data/BurstGPT_without_fails_1.csv'
 output_dir = 'traces/burst'
 SECONDS_PER_DAY = 86400  # 一天86400秒
-MAPPED_DAY_LENGTH = 60  # 映射后一天的长度（秒）
+MAPPED_DAY_LENGTH = 288  # 映射后一天的长度（秒）
 
 # 确保输出目录存在
 os.makedirs(output_dir, exist_ok=True)
@@ -88,7 +88,8 @@ for day in sorted(daily_requests.keys()):
     output_file = os.path.join(output_dir, f'day_{day}.csv')
     
     # 写入输出文件
-    print(f"正在写入第 {day} 天的数据到 {output_file} (共 {len(output_data)} 条记录)")
+    if len(output_data) < 20000:
+        print(f"正在写入第 {day} 天的数据到 {output_file} (共 {len(output_data)} 条记录)")
     with open(output_file, 'w', newline='', encoding='utf-8') as f:
         fieldnames = ['request_id', 'request_type', 'application_id', 'arrival_timestamp', 
                       'batch_size', 'prompt_size', 'token_size']

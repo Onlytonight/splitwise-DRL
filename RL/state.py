@@ -42,6 +42,9 @@ class RLStateCollector:
         "needs_timestamp": True,  # 时间戳特征
         "needs_prompt_instance_pending_token": True,  # prompt 实例待处理的 token 归一化值
         "needs_queue_delta": True,  # 队列变化率特征（当前队列 - 上一次队列）
+        "needs_io_ratio": True,  # 输入/输出长度比
+        "needs_avg_batch_tokens": True,  # 平均批次token数
+        "needs_rejection_rate": True,  # 拒绝率（P和D）
     }
     
     # 共享特征的名称映射，用于通过 enabled_features 控制
@@ -58,6 +61,9 @@ class RLStateCollector:
         "timestamp": "needs_timestamp",  # 时间戳特征
         "p_ins_pending_token": "needs_prompt_instance_pending_token",  # prompt 实例待处理的 token
         "queue_delta": "needs_queue_delta",  # 队列变化率特征
+        "io_ratio": "needs_io_ratio",  # 输入/输出长度比
+        "avg_batch_tokens": "needs_avg_batch_tokens",  # 平均批次token数
+        "rejection_rate": "needs_rejection_rate",  # 拒绝率（P和D）
     }
 
     _FEATURE_PAIRS = {
@@ -95,6 +101,9 @@ class RLStateCollector:
         "needs_timestamp": True,
         "needs_prompt_instance_pending_token": True,
         "needs_queue_delta": True,  # 队列变化率特征
+        "needs_io_ratio": True,  # 输入/输出长度比
+        "needs_avg_batch_tokens": True,  # 平均批次token数
+        "needs_rejection_rate": True,  # 拒绝率（P和D）
     }
     
     @classmethod
@@ -298,11 +307,25 @@ class RLStateCollector:
             snapshot.append(avg_prompt_len)
         if cfg["needs_output_len"]:
             snapshot.append(avg_output_len)
+        
+        # 4.5 I/O Ratio (输入/输出长度比)
+        if cfg.get("needs_io_ratio", False):
+            io_ratio = avg_prompt_len / avg_output_len if avg_output_len > 0 else 0.0
+            snapshot.append(io_ratio)
+        
+        # 4.6 Avg Arrival Batch Tokens (平均到达批次token数)
+        if cfg.get("needs_avg_batch_tokens", False):
+            # 平均请求大小 = 平均prompt + 平均output
+            avg_batch_tokens = avg_prompt_len + avg_output_len
+            snapshot.append(avg_batch_tokens)
 
         # --- B. 队列特征 (Queue) ---
-        sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size, prompt_instance_pending_token = self.get_scheduler_feature()
+        sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size, prompt_instance_pending_token, \
+        total_p_instance_pending_tokens = self.get_scheduler_feature()
         n_p, n_t, util_mem_p, util_mem_t, ins_p_queue, ins_d_queue = self.get_instance_feature()
-        
+        # prompt_instance_pending_token是平均每个p实例的队列tokens数
+        prompt_max_pending_batch_tokens = self.scheduler.prompt_max_pending_batch_tokens
+
         # 计算队列变化率（当前队列 - 上一次队列）
         p_queue_delta = sch_p_queue_tokens - stats.get('last_p_queue', 0.0)
         d_queue_delta = sch_d_queue_tokens - stats.get('last_d_queue', 0.0)
@@ -340,9 +363,21 @@ class RLStateCollector:
         # --- D. 性能反馈 (SLO) ---
         # 注意：SLO不再作为状态特征，仅用于外部评估
         # 但仍需要获取none_count等指标用于状态
-        ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, prompt_none_count, token_none_count = self.scheduler.get_period_result(mode=self.mode)
+        ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, \
+        prompt_none_count, token_none_count, \
+        prompt_none_tokens, token_none_tokens, request_arrival_tokens = self.scheduler.get_period_result(mode=self.mode)
         # SLO特征已移除，不再添加到snapshot
+        
+        # D.5 Rejection Rate (拒绝率)
+        if cfg.get("needs_rejection_rate", False):
+            # 避免除以0
+            safe_arrival_tokens = max(request_arrival_tokens, 1.0)
+            p_rejection_rate = prompt_none_tokens / safe_arrival_tokens
+            d_rejection_rate = token_none_tokens / safe_arrival_tokens
+            snapshot.append(p_rejection_rate)
+            snapshot.append(d_rejection_rate)
 
+        
         # --- E. 扩缩容特征 ---
         scaling_up_prompt, scaling_up_token, draining_prompt, draining_token = self.get_scaling_manager_feature()
 
@@ -404,12 +439,13 @@ class RLStateCollector:
         })
 
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
-        # 添加队列差值用于奖励计算
+        # 添加队列差值和新的reward计算所需变量
         reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft, tbt,
                         ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time, rps,
-                        p_queue_delta, d_queue_delta]  # 添加队列差值
-        # instance_num: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
-        instance_num = [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
+                        p_queue_delta, d_queue_delta, 
+                        request_arrival_tokens, total_p_instance_pending_tokens, prompt_max_pending_batch_tokens]  # 添加新的reward计算所需变量
+        # instance_num: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t, prompt_none_tokens, token_none_tokens]
+        instance_num = [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t, prompt_none_tokens, token_none_tokens]
 
         result = (np.array(snapshot, dtype=np.float32), instance_num, reward_stats, rps)
         
@@ -474,6 +510,24 @@ class RLStateCollector:
             norm_vec.append(np.clip((raw_vector[idx] +1)/ 2048.0, 0, 1))
             if self.debug_features:
                 feature_names.append("output_len")
+            idx += 1
+        
+        # I/O Ratio
+        if cfg.get("needs_io_ratio", False):
+            # 输入/输出比，使用tanh归一化
+            io_ratio_val = raw_vector[idx]
+            norm_vec.append(np.tanh(io_ratio_val / 2.0))  # 假设典型比例在0-2之间
+            if self.debug_features:
+                feature_names.append("io_ratio")
+            idx += 1
+        
+        # Avg Batch Tokens
+        if cfg.get("needs_avg_batch_tokens", False):
+            # 平均批次token数，使用clip归一化
+            avg_batch_val = raw_vector[idx]
+            norm_vec.append(np.clip(avg_batch_val / 2048.0, 0, 1))  # 假设最大2048 tokens
+            if self.debug_features:
+                feature_names.append("avg_batch_tokens")
             idx += 1
 
         # Queue features
@@ -546,6 +600,19 @@ class RLStateCollector:
             idx += 1
 
         # SLO features - 已移除，不再作为状态特征
+        
+        # Rejection Rate features (拒绝率，已归一化到0-1)
+        if cfg.get("needs_rejection_rate", False):
+            p_rejection_val = raw_vector[idx]
+            norm_vec.append(np.clip(p_rejection_val, 0, 1))  # P拒绝率
+            if self.debug_features:
+                feature_names.append("p_rejection_rate")
+            idx += 1
+            d_rejection_val = raw_vector[idx]
+            norm_vec.append(np.clip(d_rejection_val, 0, 1))  # D拒绝率
+            if self.debug_features:
+                feature_names.append("d_rejection_rate")
+            idx += 1
 
         # Scaling features
         if cfg["needs_scaling_prompt"]:
@@ -677,15 +744,17 @@ class RLStateCollector:
         获取调度器（scheduler）相关的特征
         
         Returns:
-            tuple: (sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size, prompt_instance_pending_token)
+            tuple: (sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size, prompt_instance_pending_token, total_p_instance_pending_tokens)
                 - sch_p_queue_tokens: 调度器中待处理的 prompt 队列长度（token 数）
                 - sch_d_queue_tokens: 调度器中待处理的 token 队列长度（token 数）
                 - wait_time: 平均等待时间
                 - avg_prompt_size: 平均 prompt 大小
-                - prompt_instance_pending_token: prompt 实例待处理的 token 归一化值
+                - prompt_instance_pending_token: prompt 实例待处理的 token 归一化值（平均值）
+                - total_p_instance_pending_tokens: 所有P实例的总pending tokens（未归一化）
         """
         scheduler = self.scheduler
-        total_pending_prompt_queue_length, total_pending_tokens, avg_time, avg_prompt_size, prompt_instance_pending_token\
+        total_pending_prompt_queue_length, total_pending_tokens,\
+         avg_time, avg_prompt_size, prompt_instance_pending_token, total_p_instance_pending_tokens\
             = scheduler.get_queue_stats()
         # print("sch堆积状态:",total_pending_prompt_queue_length,total_pending_tokens)
 
@@ -694,7 +763,8 @@ class RLStateCollector:
             total_pending_tokens,
             avg_time,
             avg_prompt_size,
-            prompt_instance_pending_token
+            prompt_instance_pending_token,
+            total_p_instance_pending_tokens
         )
 
     def get_instance_feature(self):
@@ -881,6 +951,10 @@ class RLStateCollector:
             dim += 1
         if cfg["needs_output_len"]:
             dim += 1
+        if cfg.get("needs_io_ratio", False):
+            dim += 1  # I/O ratio
+        if cfg.get("needs_avg_batch_tokens", False):
+            dim += 1  # Avg batch tokens
         
         # Queue
         if cfg["needs_p_queue"]:
@@ -906,6 +980,10 @@ class RLStateCollector:
             dim += 2  # util_mem_p 和 util_mem_t
         
         # SLO - 已移除，不再作为状态特征
+        
+        # Rejection Rate
+        if cfg.get("needs_rejection_rate", False):
+            dim += 2  # p_rejection_rate 和 d_rejection_rate
         
         # Scaling
         if cfg["needs_scaling_prompt"]:

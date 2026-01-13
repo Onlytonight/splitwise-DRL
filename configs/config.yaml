@@ -26,13 +26,14 @@ trace_list:
   - traces/burst_144/day_28.csv
 #  - traces/rr_conv_30_50.csv
 
+
 trace_epochs: 1  # 单个 trace 的循环次数（当使用 trace_list 时，此参数用于控制整个列表的循环次数）
 trace_list_repeats: 500  # trace_list 的循环次数
 # 直接指定要加载的 SAC 模型 checkpoint 完整路径（相对当前运行目录或绝对路径）
 #model_path: cp/SAC_11000_20260105_224136.pth
 
 choices: ${hydra:runtime.choices}
-output_dir: results/${seed}/${start_state.state_type}/${trace.filename}/${cluster.servers.0.count}_${cluster.servers.1.count}/${applications.0.model_architecture}/${applications.0.scheduler}
+output_dir: results/${seed}/${start_state.state_type}/${cluster.servers.0.count}_${cluster.servers.1.count}/${applications.0.model_architecture}/${applications.0.scheduler}/${choices.simulator}
 
 hydra:
   # changes the cwd to the output directory

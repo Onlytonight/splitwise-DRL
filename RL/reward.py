@@ -50,127 +50,116 @@ class RLRewardCalculator:
 
     def calculate_reward(self, cluster, applications, raw_stats, instance_num, action_executed=True, step=0):
         """
-        简化的奖励函数：只考虑队列和成本
-        目标：队列数为0的情况下成本最低
+        基于归一化阻塞率和饱和度的奖励函数
+        
+        新的设计思路：
+        1. 成本惩罚：最小化实例数
+        2. 阻塞惩罚：最小化被阻塞的token比率（归一化到达tokens）
+        3. 饱和度惩罚：预警内部排队接近上限（P实例pending tokens / limit）
+        4. 内存惩罚：预警D实例内存利用率过高
         
         :param action_executed:
         :param cluster:
         :param applications:
-        :param instance_num:
+        :param instance_num: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t,prompt_none_tokens,token_none_tokens]
         :param raw_stats: [prompt_rate, token_rate, sch_p_queue, sch_d_queue, n_p, n_t,
                           avg_prompt_size, ttft, tbt, ins_p_queue, ins_d_queue, 
-                          avg_queue_time, avg_nth_token_overhead, use_time, rps]
+                          avg_queue_time, avg_nth_token_overhead, use_time, rps,
+                          p_queue_delta, d_queue_delta, request_arrival_tokens, 
+                          total_p_instance_pending_tokens, prompt_max_pending_batch_tokens]
         """
+        # -------------------------------------------------------------
+        # 提取基础数据
+        # -------------------------------------------------------------
+        n_p, n_t = raw_stats[4:6]
+        q_prompt = raw_stats[2]  # 调度器中的prompt队列（被阻塞的tokens）
+        q_decoding = raw_stats[3]  # 调度器中的decoding队列（被阻塞的tokens）
+        
+        # 新增的数据（从raw_stats的扩展部分）
+        request_arrival_tokens = raw_stats[17] if len(raw_stats) > 17 else 1.0  # 到达的总tokens
+        total_p_instance_pending_tokens = raw_stats[18] if len(raw_stats) > 18 else 0.0  # P实例内部pending总tokens
+        prompt_max_pending_batch_tokens = raw_stats[19] if len(raw_stats) > 19 else 1.0  # P实例pending上限
+        
+        prompt_none_tokens = instance_num[6] if len(instance_num) > 6 else 0.0
+        token_none_tokens = instance_num[7] if len(instance_num) > 7 else 0.0
+
+        # 从instance_num获取内存利用率
+        util_mem_p = instance_num[4] if len(instance_num) > 4 else 0.0
+        util_mem_t = instance_num[5] if len(instance_num) > 5 else 0.0
+        
+        # 避免除以0
+        request_arrival_tokens = max(request_arrival_tokens, 1.0)
+        prompt_max_pending_batch_tokens = max(prompt_max_pending_batch_tokens, 1.0)
+        
         # -------------------------------------------------------------
         # 1. 成本惩罚 (Cost Penalty)
         # -------------------------------------------------------------
-        n_p, n_t = raw_stats[4:6]
-        if self.mode == "prompt":
-            cost_score = n_p
-        elif self.mode == "token":
-            cost_score = n_t
-        else:
-            cost_score = (n_p + n_t)
+        cost_score = (n_p + n_t)
         
         cost_penalty = -self.w_cost * cost_score
-
+        
         # -------------------------------------------------------------
-        # 2. 队列惩罚 (Queue Penalty) - 核心信号
+        # 2. 阻塞率惩罚 (Blocking Rate Penalty) - 归一化版本
         # -------------------------------------------------------------
-        # A. 队列存在惩罚（使用队列的绝对值）
-        q_prompt = raw_stats[2]  # 调度器中的prompt队列
-        q_decoding = raw_stats[3]  # 调度器中的decoding队列
-
-        # # 修复bug：原来两次都用了 q_decoding
-        # queue_absolute_penalty = -(np.log1p(q_prompt) + np.log1p(q_decoding)) * self.w_queue
-
-        # B. 队列差值惩罚（使用队列的变化量）
-        # raw_stats 格式已更新，包含队列差值（在最后两个位置）
-        p_queue_delta = raw_stats[15] if len(raw_stats) > 15 else 0.0  # prompt队列差值
-        d_queue_delta = raw_stats[16] if len(raw_stats) > 16 else 0.0  # decoding队列差值
-
-        # 队列差值惩罚：正值表示队列增长（需要惩罚），负值表示队列减少（给予奖励）
-        # 改用 log(1+abs(x))，并保留符号
-        queue_delta_penalty = -(
-            np.sign(p_queue_delta) * np.log1p(abs(p_queue_delta)) + 
-            np.sign(d_queue_delta) * np.log1p(abs(d_queue_delta))
-        ) * self.w_queue
-
-        # C. 队列导数惩罚（队列变化的加速度）
-        # 导数 = 当前差值 - 上一次差值
-        p_queue_derivative = p_queue_delta - self.last_queue_delta['p']
-        d_queue_derivative = d_queue_delta - self.last_queue_delta['t']
-
-        # 队列导数惩罚：正值表示队列增长加速（更严重），负值表示队列增长减速（好转）
-        # 改用 log(1+abs(x))，并保留符号
-        queue_derivative_penalty = -(
-            np.sign(p_queue_derivative) * np.log1p(abs(p_queue_derivative)) + 
-            np.sign(d_queue_derivative) * np.log1p(abs(d_queue_derivative))
-        ) * self.w_queue
-
-        # 更新上一次的队列差值
-        self.last_queue_delta = {'p': p_queue_delta, 't': d_queue_delta}
-
-        # D. 综合队列惩罚
-        queue_penalty =  queue_delta_penalty + queue_derivative_penalty
-
-        # E. 利用率过载预警（从instance_num获取）
-        # instance_num格式: [n_p, n_t, util_p, util_d, util_mem_p, util_mem_t]
-        util_p, util_d = instance_num[2], instance_num[3]
-        util_mem_p = instance_num[4] if len(instance_num) > 4 else 0.0
-        util_mem_t = instance_num[5] if len(instance_num) > 5 else 0.0
-
-        # 如果内存利用率过高，给予惩罚
-        overload_penalty = 0.0
-        if util_mem_p > self.UTIL_MEM_THRESHOLD:
-            overload_penalty -= self.w_util * (util_mem_p - self.UTIL_MEM_THRESHOLD) * 10.0
+        # 阻塞率 = 被阻塞的tokens / 到达的总tokens
+        # 这是一个0-1之间的归一化值，解耦负载波动
+        
+        blocking_rate_p = prompt_none_tokens / request_arrival_tokens
+        blocking_rate_d = token_none_tokens / request_arrival_tokens
+        blocking_penalty = -self.w_queue * (blocking_rate_p + blocking_rate_d) * 100.0
+        
+        # -------------------------------------------------------------
+        # 3. 内部饱和度惩罚 (Saturation Penalty) - 预警信号
+        # -------------------------------------------------------------
+        # P实例的内部pending率，使用平方惩罚对接近上限更敏感
+        saturation_penalty = 0.0
+        
+        avg_pending_rate = total_p_instance_pending_tokens / (n_p * prompt_max_pending_batch_tokens)
+        avg_pending_rate = np.clip(avg_pending_rate, 0.0, 1.0)
+        # 使用平方惩罚：接近0时几乎无惩罚，接近1时惩罚急剧增加
+        saturation_penalty = -self.w_congestion * (avg_pending_rate ** 2) * 100.0
+        
+        # -------------------------------------------------------------
+        # 4. 内存过载惩罚 (Memory Overload Penalty)
+        # -------------------------------------------------------------
+        # D实例的内存利用率过高预警
+        memory_penalty = 0.0
+        
         if util_mem_t > self.UTIL_MEM_THRESHOLD:
-            overload_penalty -= self.w_util * (util_mem_t - self.UTIL_MEM_THRESHOLD) * 10.0
+            overflow = util_mem_t - self.UTIL_MEM_THRESHOLD
+            memory_penalty = -self.w_util * (overflow) * 100.0
+        
 
-        congestion_penalty = queue_penalty + overload_penalty
-
+        
         # -------------------------------------------------------------
-        # 4. 总奖励
+        # 5. 总奖励
         # -------------------------------------------------------------
-        reward = cost_penalty + congestion_penalty
-
-        # # ======== 打印详细信息 ========
-        # print(f"Step详细信息：")
-        # print(f"  模式(mode): {self.mode}")
-        # print(f"  实例数 n_p: {n_p}, n_t: {n_t}")
-        # print(f"  调度器队列 q_prompt: {q_prompt}, q_decoding: {q_decoding}")
-        # print(f"  队列差值 p_delta: {p_queue_delta:.2f}, d_delta: {d_queue_delta:.2f}")
-        # print(f"  队列导数 p_deriv: {p_queue_derivative:.2f}, d_deriv: {d_queue_derivative:.2f}")
-        # print(f"  cost_score: {cost_score}")
-        # print(f"  成本惩罚 cost_penalty: {cost_penalty:.4f}")
-        # print(f"  队列差值惩罚 queue_delta_penalty: {queue_delta_penalty:.4f}")
-        # print(f"  队列导数惩罚 queue_derivative_penalty: {queue_derivative_penalty:.4f}")
-        # print(f"  队列总惩罚 queue_penalty: {queue_penalty:.4f}")
-        # print(f"  util_p: {util_p:.2f}, util_d: {util_d:.2f}, util_mem_p: {util_mem_p:.2f}, util_mem_t: {util_mem_t:.2f}")
-        # print(f"  overload_penalty: {overload_penalty:.4f}")
-        # print(f"  总惩罚 congestion_penalty: {congestion_penalty:.4f}")
-        # print(f"  ==> 总奖励 reward: {reward:.4f}")
-
+        reward = cost_penalty + blocking_penalty + saturation_penalty + memory_penalty
         
         # 更新状态记忆
         self.last_instances = {'p': n_p, 't': n_t}
 
         # -------------------------------------------------------------
-        # 4. 构建info字典（保留SLO信息用于外部评估）
+        # 6. 构建info字典（保留SLO信息用于外部评估）
         # -------------------------------------------------------------
         ins_p_queue = raw_stats[9] if len(raw_stats) > 9 else 0
         ins_d_queue = raw_stats[10] if len(raw_stats) > 10 else 0
+        p_queue_delta = raw_stats[15] if len(raw_stats) > 15 else 0.0
+        d_queue_delta = raw_stats[16] if len(raw_stats) > 16 else 0.0
+        
+        # 计算队列导数（变化的加速度）
+        p_queue_derivative = p_queue_delta - self.last_queue_delta.get('p', 0.0)
+        d_queue_derivative = d_queue_delta - self.last_queue_delta.get('t', 0.0)
+        self.last_queue_delta = {'p': p_queue_delta, 't': d_queue_delta}
         
         info = {
             'step': step,
             'reward': reward,
             'cost_score': cost_score,
             'cost_penalty': cost_penalty,
-            'queue_delta_penalty': queue_delta_penalty,
-            'queue_derivative_penalty': queue_derivative_penalty,
-            'queue_penalty': queue_penalty,
-            'congestion_penalty': congestion_penalty,
-            'overload_penalty': overload_penalty,
+            'blocking_penalty': blocking_penalty,
+            'saturation_penalty': saturation_penalty,
+            'memory_penalty': memory_penalty,
             'n_p': n_p,
             'n_t': n_t,
             # 保留SLO信息用于外部评估（不参与奖励计算）
@@ -191,6 +180,12 @@ class RLRewardCalculator:
             'use_time': raw_stats[13] if len(raw_stats) > 13 else 0,
             'avg_queue_time': raw_stats[11] if len(raw_stats) > 11 else 0,
             'avg_nth_token_overhead': raw_stats[12] if len(raw_stats) > 12 else 0,
+            # 新增的归一化指标
+            'blocking_rate_p': q_prompt / request_arrival_tokens,
+            'blocking_rate_d': q_decoding / request_arrival_tokens,
+            'avg_pending_rate': total_p_instance_pending_tokens / (n_p * prompt_max_pending_batch_tokens) if n_p > 0 else 0.0,
+            'util_mem_p': util_mem_p,
+            'util_mem_t': util_mem_t,
         }
         
         return reward, info

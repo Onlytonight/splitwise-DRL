@@ -45,6 +45,8 @@ class Scheduler(ABC):
         self.completed_queue = []
         self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
 
+        self.request_arrival_tokens = 0
+        
         # executors
         self.executor_type = ExecutorType.CentralExecutor
         self.executors = {}
@@ -78,7 +80,7 @@ class Scheduler(ABC):
         
         # 重置计数器
         self.last_completed_count = 0
-        
+        self.request_arrival_tokens = 0
         # 清空执行器
         self.executors.clear()
 
@@ -131,6 +133,7 @@ class Scheduler(ABC):
         Handles the arrival of a new Request.
         """
         request.arrive_at_scheduler()
+        self.request_arrival_tokens += request.prompt_size
         self.pending_queue.append(request)
         if len(self.pending_queue) == 1:
             self.run_request(request)
@@ -811,6 +814,17 @@ class MixedPoolScheduler(KVScheduler):
         # 统计prompt和token实例为None的次数
         self.prompt_none_count = 0
         self.token_none_count = 0
+        self.prompt_none_tokens = 0
+        self.token_none_tokens = 0
+
+    def reset(self):
+        super().reset()
+        self.prompt_none_count = 0
+        self.token_none_count = 0
+        self.prompt_none_tokens = 0
+        self.token_none_tokens = 0
+
+
 
     def is_memory_loaded(self, instance, tasks):
         """
@@ -903,8 +917,10 @@ class MixedPoolScheduler(KVScheduler):
             # 统计是prompt还是token为None
             if prompt_instance is None:
                 self.prompt_none_count += 1
+                self.prompt_none_tokens += request.prompt_size
             if token_instance is None:
                 self.token_none_count += 1
+                self.token_none_tokens += request.prompt_size
             if self.debug:
                 print(f"[Backpressure] Req {request.request_id} stalled. All instances overloaded.")
             return False
@@ -1061,16 +1077,17 @@ class MixedPoolScheduler(KVScheduler):
         else:
             total_time = 0
         avg_prompt_size = total_pending_prompt_queue_length/len(self.pending_queue) if len(self.pending_queue) > 0 else 0
-        prompt_instance_pending_token=sum(ins.sched_pending_tokens / self.prompt_max_pending_batch_tokens for ins in self.prompt_instances)
-
-        return total_pending_prompt_queue_length, total_pending_tokens, total_time,avg_prompt_size,prompt_instance_pending_token
+        
+        total_p_instance_pending_tokens=sum(ins.sched_pending_tokens for ins in self.prompt_instances)
+        prompt_instance_pending_token=total_p_instance_pending_tokens/len(self.prompt_instances) if len(self.prompt_instances) > 0 else 0
+        return total_pending_prompt_queue_length, total_pending_tokens, total_time,avg_prompt_size,prompt_instance_pending_token,total_p_instance_pending_tokens
 
     def get_period_result(self, mode=None):
         """
         重写父类方法，添加prompt_none_count和token_none_count的返回和清零
         支持 mode 参数进行缓存控制
         :param mode: "prompt" 时返回并缓存结果，"token" 时取缓存结果并清除缓存
-        :return: (ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, prompt_none_count, token_none_count)
+        :return: (ttft, tbt, vio_slo_rate, avg_queue_time, avg_nth_token_overhead, prompt_none_count, token_none_count, prompt_none_tokens, token_none_tokens, request_arrival_tokens)
         """
         # 如果 mode 是 "token"，返回缓存结果并清除缓存
         if mode == "token":
@@ -1080,7 +1097,7 @@ class MixedPoolScheduler(KVScheduler):
                 return result
             else:
                 # 如果没有缓存，返回默认值
-                return [0,0,0], [0,0,0], [0,0], 0.0, 0.0, 0, 0
+                return [0,0,0], [0,0,0], [0,0], 0.0, 0.0, 0, 0, 0, 0, 0
         
         # 如果 mode 是 "prompt" 或 None，计算新结果
         # 调用父类方法获取原有返回值（传递 mode 参数）
@@ -1089,13 +1106,19 @@ class MixedPoolScheduler(KVScheduler):
         # 获取当前计数器的值
         prompt_none_count = self.prompt_none_count
         token_none_count = self.token_none_count
+
+        prompt_none_tokens = self.prompt_none_tokens
+        token_none_tokens = self.token_none_tokens
+        request_arrival_tokens = self.request_arrival_tokens
         
         # 清零计数器
         self.prompt_none_count = 0
         self.token_none_count = 0
-        
+        self.prompt_none_tokens = 0
+        self.token_none_tokens = 0
+        self.request_arrival_tokens = 0
         # 返回原有结果加上两个计数器
-        full_result = result + (prompt_none_count, token_none_count)
+        full_result = result + (prompt_none_count, token_none_count, prompt_none_tokens, token_none_tokens, request_arrival_tokens)
         
         # 如果 mode 是 "prompt"，缓存完整结果（包含 prompt_none_count 和 token_none_count）
         if mode == "prompt":

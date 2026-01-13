@@ -2,7 +2,7 @@
 
 state_type: splitwise_${start_state.prompt.num_instances}_${start_state.token.num_instances}
 application_id: 0
-split_type: homogeneous
+split_type: homogeneous #heterogeneous
 prompt:
   instance_type: Splitwise
   max_batch_size: 512

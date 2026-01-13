@@ -69,8 +69,14 @@ class DatabasePerformanceModel(PerformanceModel):
     """
     def __init__(self, db_path):
         super().__init__()
-        self.db = pd.read_csv(os.path.join(get_original_cwd(), db_path),
-                              dtype={"model": "category", "hardware": "category"})
+        
+        try:
+            self.db = pd.read_csv(os.path.join(get_original_cwd(), db_path),
+                                  dtype={"model": "category", "hardware": "category"})
+        except Exception as e:
+            # 如果报错，则尝试用绝对路径再加载一次
+            self.db = pd.read_csv("data/perf_model.csv",
+                                  dtype={"model": "category", "hardware": "category"})
 
         # ensure the database has the correct columns
         # and remove extraneous columns
@@ -151,7 +157,8 @@ class DatabasePerformanceModel(PerformanceModel):
         """
         Returns the prompt time from the database.
         """
-        prompt_time = self.db[self._match(**kwargs)]["prompt_time"].median()
+        kwargs_wo_batch_tokens = {k: v for k, v in kwargs.items() if k != "batch_tokens"}
+        prompt_time = self.db[self._match(**kwargs_wo_batch_tokens)]["prompt_time"].median()
         # if not found, predict
         if math.isnan(prompt_time):
             new_row = self.predict_new_row(**kwargs)
@@ -162,7 +169,8 @@ class DatabasePerformanceModel(PerformanceModel):
         """
         Returns the prompt time from the database.
         """
-        token_time = self.db[self._match(**kwargs)]["token_time"].median()
+        kwargs_wo_batch_tokens = {k: v for k, v in kwargs.items() if k != "batch_tokens"}
+        token_time = self.db[self._match(**kwargs_wo_batch_tokens)]["token_time"].median()
         # if not found, predict
         if math.isnan(token_time):
             new_row = self.predict_new_row(**kwargs)
