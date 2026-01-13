@@ -1,0 +1,56 @@
+# 基于显存利用率的基线策略配置
+algorithm: baseline_utilization
+
+# 决策参数
+decision_interval: 2  # 决策间隔（秒）
+
+# 状态特征配置
+enabled_features:
+  - queue
+  - none_count
+  - instance_count
+  - timestamp
+  - rps
+  - rps_delta
+  - length
+  - rate
+  - util_mem
+  - draining
+  - p_ins_pending_token
+  - queue_delta
+
+stack_size: 1  # 状态堆叠的时间窗大小
+
+# 奖励函数权重（用于评估）
+reward_weights:
+  w_cost: 0.2
+  w_queue: 1.5
+  w_util: 1.0
+  w_congestion: 1.0
+  w_stability: 0.0
+  w_slo: 0.0
+  w_switch: 0.0
+
+# 动作执行参数
+action_scale_step: 20
+action_mig_step: 20
+min_instances_per_pool: 1
+max_total_instances: 200
+
+# 经验池保存配置（用于离线RL/预训练）
+save_replay_buffer: false              # 是否保存经验池
+replay_buffer_path: "data/replay_buffer_utilization.npz"  # 经验池保存路径
+clear_replay_buffer_on_start: false   # 启动时是否清空已有经验池（false=追加模式，true=覆盖模式）
+
+# 基于显存利用率的策略参数
+policy_config:
+  # 利用率阈值
+  upper_threshold: 0.8  # 显存利用率高于80%时扩容
+  lower_threshold: 0.3  # 显存利用率低于30%时缩容
+  
+  # 扩缩容步长
+  scale_step: 1  # 每次扩/缩容的实例数
+  
+  # 实例数限制
+  min_instances_per_pool: 1
+  max_total_instances: 200

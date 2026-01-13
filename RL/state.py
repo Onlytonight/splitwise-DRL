@@ -295,7 +295,7 @@ class RLStateCollector:
         # --- B. 队列特征 (Queue) ---
         sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size, prompt_instance_pending_token = self.get_scheduler_feature()
         n_p, n_t, util_mem_p, util_mem_t, ins_p_queue, ins_d_queue = self.get_instance_feature()
-        
+
         if cfg["needs_p_queue"]:
             snapshot.append(sch_p_queue_tokens)
         if cfg["needs_d_queue"]:
@@ -846,15 +846,15 @@ class RLStateCollector:
     def feature_dim(self):
         """
         根据模式返回不同的单步特征维度：
-        - joint: 32 (rps + prompt_rate + token_rate + prompt_len + output_len + 
-                     p_queue + d_queue + wait_time + prompt_instance_pending_token + 2*instance_count + util_p + util_d + 
-                     2*util_mem (util_mem_p + util_mem_t) + 3*ttft_rate + 3*tbt_rate + 4*scaling + 
+        - joint: 32 (rps + prompt_rate + token_rate + prompt_len + output_len +
+                     p_queue + d_queue + wait_time + prompt_instance_pending_token + 2*instance_count + util_p + util_d +
+                     2*util_mem (util_mem_p + util_mem_t) + 3*ttft_rate + 3*tbt_rate + 4*scaling +
                      2*none_count + 2*draining + 2*last_action + use_time + timestamp)
-        - prompt: 22 (rps + prompt_rate + prompt_len + p_queue + wait_time + prompt_instance_pending_token + 
-                      2*instance_count + util_p + 2*util_mem (util_mem_p + util_mem_t) + 3*ttft_rate + 2*scaling_prompt + 
+        - prompt: 22 (rps + prompt_rate + prompt_len + p_queue + wait_time + prompt_instance_pending_token +
+                      2*instance_count + util_p + 2*util_mem (util_mem_p + util_mem_t) + 3*ttft_rate + 2*scaling_prompt +
                       2*none_count + 2*draining + 2*last_action + use_time + timestamp)
-        - token: 22 (rps + token_rate + output_len + d_queue + wait_time + prompt_instance_pending_token + 
-                     2*instance_count + util_d + 2*util_mem (util_mem_p + util_mem_t) + 3*tbt_rate + 2*scaling_token + 
+        - token: 22 (rps + token_rate + output_len + d_queue + wait_time + prompt_instance_pending_token +
+                     2*instance_count + util_d + 2*util_mem (util_mem_p + util_mem_t) + 3*tbt_rate + 2*scaling_token +
                      2*none_count + 2*draining + 2*last_action + use_time + timestamp)
         注意：none_count、instance_count、draining、last_action、use_time 和 timestamp 都是共享特征，两个代理都同时包含 prompt 和 token 的值
         注意：util_mem 现在包含两个值：util_mem_p（prompt实例内存利用率）和 util_mem_t（token实例内存利用率）

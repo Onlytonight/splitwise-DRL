@@ -9,7 +9,7 @@ from hydra.utils import instantiate
 from hydra.utils import get_original_cwd, to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
-from simulator import TraceSimulator, TraceRLSimulator,TraceSACSimulator
+from simulator import TraceSimulator, TraceRLSimulator, TraceSACSimulator, TraceBaselineSimulator
 from initialize import *
 
 
@@ -60,6 +60,10 @@ def run_simulation(cfg):
     # 如果配置中提供了 model_path，则传递给模拟器，用于从该路径加载已训练好的模型
     model_path = getattr(cfg, 'model_path', None)
     
+    # 根据算法类型选择模拟器
+    algorithm = cfg.simulator.get('algorithm', 'sac')
+    logging.info(f"Using algorithm: {algorithm}")
+
     # 检查是否有 trace_list 配置，如果有则循环训练多个 trace
     if hasattr(cfg, 'trace_list') and cfg.trace_list is not None and len(cfg.trace_list) > 0:
         # 使用 trace_list 进行循环训练
@@ -82,14 +86,39 @@ def run_simulation(cfg):
         first_trace = init_trace_from_path(trace_paths[0])
         print(f"First trace: {trace_paths[0]}")
         
-        # 创建模拟器（只创建一次，后续重用）
-        sim = TraceSACSimulator(trace=first_trace,
-                                cluster=cluster,
-                                applications=applications,
-                                router=router,
-                                arbiter=arbiter,
-                                end_time=cfg.end_time,
-                                model_path=model_path)
+        # 根据算法类型创建模拟器
+        if algorithm.startswith('baseline_'):
+            # 基线策略（非学习）
+            policy_name = algorithm.replace('baseline_', '')
+            sim = TraceBaselineSimulator(trace=first_trace,
+                                        cluster=cluster,
+                                        applications=applications,
+                                        router=router,
+                                        arbiter=arbiter,
+                                        end_time=cfg.end_time,
+                                        policy_name=policy_name,
+                                        simulator_cfg=cfg.simulator)
+        elif algorithm == 'sac':
+            # SAC 强化学习
+            sim = TraceSACSimulator(trace=first_trace,
+                                    cluster=cluster,
+                                    applications=applications,
+                                    router=router,
+                                    arbiter=arbiter,
+                                    end_time=cfg.end_time,
+                                    model_path=model_path,
+                                    simulator_cfg=cfg.simulator)
+        elif algorithm == 'ppo':
+            # PPO 强化学习
+            sim = TraceRLSimulator(trace=first_trace,
+                                   cluster=cluster,
+                                   applications=applications,
+                                   router=router,
+                                   arbiter=arbiter,
+                                   end_time=cfg.end_time,
+                                   simulator_cfg=cfg.simulator)
+        else:
+            raise ValueError(f"Unknown algorithm: {algorithm}")
         
         # 初始化起始状态
         init_start_state(cfg,
@@ -160,14 +189,39 @@ def run_simulation(cfg):
         trace = init_trace(cfg)
         print("trace is", trace)
         
-        # 创建模拟器
-        sim = TraceSACSimulator(trace=trace,
-                                cluster=cluster,
-                                applications=applications,
-                                router=router,
-                                arbiter=arbiter,
-                                end_time=cfg.end_time,
-                                model_path=model_path)
+        # 根据算法类型创建模拟器
+        if algorithm.startswith('baseline_'):
+            # 基线策略（非学习）
+            policy_name = algorithm.replace('baseline_', '')
+            sim = TraceBaselineSimulator(trace=trace,
+                                        cluster=cluster,
+                                        applications=applications,
+                                        router=router,
+                                        arbiter=arbiter,
+                                        end_time=cfg.end_time,
+                                        policy_name=policy_name,
+                                        simulator_cfg=cfg.simulator)
+        elif algorithm == 'sac':
+            # SAC 强化学习
+            sim = TraceSACSimulator(trace=trace,
+                                    cluster=cluster,
+                                    applications=applications,
+                                    router=router,
+                                    arbiter=arbiter,
+                                    end_time=cfg.end_time,
+                                    model_path=model_path,
+                                    simulator_cfg=cfg.simulator)
+        elif algorithm == 'ppo':
+            # PPO 强化学习
+            sim = TraceRLSimulator(trace=trace,
+                                   cluster=cluster,
+                                   applications=applications,
+                                   router=router,
+                                   arbiter=arbiter,
+                                   end_time=cfg.end_time,
+                                   simulator_cfg=cfg.simulator)
+        else:
+            raise ValueError(f"Unknown algorithm: {algorithm}")
         
         # 如果设置了 trace_epochs > 1，循环使用同一个 trace
         for epoch in range(1, trace_epochs + 1):

@@ -45,6 +45,8 @@ class Scheduler(ABC):
         self.completed_queue = []
         self.last_completed_count = 0  # 跟踪上次检查时已完成的请求数量
 
+        self.request_arrival_tokens = 0
+
         # executors
         self.executor_type = ExecutorType.CentralExecutor
         self.executors = {}
@@ -78,7 +80,7 @@ class Scheduler(ABC):
         
         # 重置计数器
         self.last_completed_count = 0
-        
+        self.request_arrival_tokens = 0
         # 清空执行器
         self.executors.clear()
 
@@ -131,6 +133,7 @@ class Scheduler(ABC):
         Handles the arrival of a new Request.
         """
         request.arrive_at_scheduler()
+        self.request_arrival_tokens += request.prompt_size
         self.pending_queue.append(request)
         if len(self.pending_queue) == 1:
             self.run_request(request)
@@ -811,13 +814,14 @@ class MixedPoolScheduler(KVScheduler):
         # 统计prompt和token实例为None的次数
         self.prompt_none_count = 0
         self.token_none_count = 0
-        
+        self.prompt_none_tokens = 0
+        self.token_none_tokens = 0
         # 队列统计历史数据收集相关
         self.queue_stats_history = []  # 存储历史统计数据
         self.stats_collection_interval = 0.1  # 100ms收集一次
         self.stats_collection_event = None  # 用于取消定期收集事件
         self.stats_collection_started = False  # 标记是否已启动收集
-    
+
     def reset(self):
         """
         重置调度器状态，包括取消定期统计收集事件
@@ -826,17 +830,19 @@ class MixedPoolScheduler(KVScheduler):
         if self.stats_collection_event is not None:
             cancel_event(self.stats_collection_event)
             self.stats_collection_event = None
-        
+
         # 清空历史数据
         self.queue_stats_history.clear()
-        
+
         # 重置计数器
         self.prompt_none_count = 0
         self.token_none_count = 0
-        
+        self.prompt_none_tokens = 0
+        self.token_none_tokens = 0
+
         # 重置启动标志
         self.stats_collection_started = False
-        
+
         # 调用父类的reset方法
         super().reset()
 
@@ -907,7 +913,7 @@ class MixedPoolScheduler(KVScheduler):
         if not self.stats_collection_started:
             self.stats_collection_started = True
             self._schedule_next_stats_collection()
-        
+
         if (len(self.prompt_instances) == 0 or len(self.token_instances) == 0) \
             and len(self.mixed_instances) == 0:
             if self.debug:
@@ -936,8 +942,10 @@ class MixedPoolScheduler(KVScheduler):
             # 统计是prompt还是token为None
             if prompt_instance is None:
                 self.prompt_none_count += 1
+                self.prompt_none_tokens += request.prompt_size
             if token_instance is None:
                 self.token_none_count += 1
+                self.token_none_tokens += request.prompt_size
             if self.debug:
                 print(f"[Backpressure] Req {request.request_id} stalled. All instances overloaded.")
             return False
@@ -1090,7 +1098,7 @@ class MixedPoolScheduler(KVScheduler):
             self.stats_collection_interval,
             self._collect_queue_stats
         )
-    
+
     def _collect_queue_stats(self):
         """
         收集当前的队列统计信息并存储到历史记录中
@@ -1098,22 +1106,22 @@ class MixedPoolScheduler(KVScheduler):
         """
         total_pending_prompt_queue_length = sum(req.prompt_size for req in self.pending_queue)
         total_pending_tokens = sum(req.token_size for req in self.pending_queue)
-        
+
         # 防止除零错误，当pending_queue为空时返回默认值0
         if len(self.pending_queue) > 0:
-            total_time = sum(req.metrics.first_schedule_failure_timestamp - clock() 
+            total_time = sum(req.metrics.first_schedule_failure_timestamp - clock()
                            for req in self.pending_queue) / len(self.pending_queue)
         else:
             total_time = 0
-        
-        avg_prompt_size = (total_pending_prompt_queue_length / len(self.pending_queue) 
+
+        avg_prompt_size = (total_pending_prompt_queue_length / len(self.pending_queue)
                           if len(self.pending_queue) > 0 else 0)
-        
+
         prompt_instance_pending_token = sum(
-            ins.sched_pending_tokens / self.prompt_max_pending_batch_tokens 
+            ins.sched_pending_tokens / self.prompt_max_pending_batch_tokens
             for ins in self.prompt_instances
         )
-        
+
         # 将当前统计数据添加到历史记录
         self.queue_stats_history.append({
             'total_pending_prompt_queue_length': total_pending_prompt_queue_length,
@@ -1123,7 +1131,7 @@ class MixedPoolScheduler(KVScheduler):
             'prompt_instance_pending_token': prompt_instance_pending_token,
             'timestamp': clock()
         })
-        
+
         # 调度下一次收集
         self._schedule_next_stats_collection()
 
@@ -1131,28 +1139,28 @@ class MixedPoolScheduler(KVScheduler):
         """
         获取队列统计信息的平均值
         返回自上次调用以来收集的所有统计数据的平均值
-        
+
         关键：在返回前先收集一次当前状态，确保不漏掉边界时刻的数据
         """
         # 先收集一次当前时刻的状态（重要！避免漏掉边界时间的数据）
         # 这样可以确保包含调用get_queue_stats这一时刻的状态
         total_pending_prompt_queue_length = sum(req.prompt_size for req in self.pending_queue)
         total_pending_tokens = sum(req.token_size for req in self.pending_queue)
-        
+
         if len(self.pending_queue) > 0:
-            total_time = sum(req.metrics.first_schedule_failure_timestamp - clock() 
+            total_time = sum(req.metrics.first_schedule_failure_timestamp - clock()
                            for req in self.pending_queue) / len(self.pending_queue)
         else:
             total_time = 0
-        
-        avg_prompt_size = (total_pending_prompt_queue_length / len(self.pending_queue) 
+
+        avg_prompt_size = (total_pending_prompt_queue_length / len(self.pending_queue)
                           if len(self.pending_queue) > 0 else 0)
-        
+
         prompt_instance_pending_token = sum(
-            ins.sched_pending_tokens / self.prompt_max_pending_batch_tokens 
+            ins.sched_pending_tokens / self.prompt_max_pending_batch_tokens
             for ins in self.prompt_instances
         )
-        
+
         # 将当前状态添加到历史记录中
         self.queue_stats_history.append({
             'total_pending_prompt_queue_length': total_pending_prompt_queue_length,
@@ -1162,40 +1170,40 @@ class MixedPoolScheduler(KVScheduler):
             'prompt_instance_pending_token': prompt_instance_pending_token,
             'timestamp': clock()
         })
-        
+
         # 如果只有一条数据（刚启动或间隔内没有其他采样），直接返回当前值
         if len(self.queue_stats_history) == 1:
             self.queue_stats_history.clear()
             return total_pending_prompt_queue_length, total_pending_tokens, total_time, avg_prompt_size, prompt_instance_pending_token
-        
+
         # 计算历史数据的平均值（包含刚添加的当前状态）
         avg_total_pending_prompt_queue_length = sum(
             stat['total_pending_prompt_queue_length'] for stat in self.queue_stats_history
         ) / len(self.queue_stats_history)
-        
+
         avg_total_pending_tokens = sum(
             stat['total_pending_tokens'] for stat in self.queue_stats_history
         ) / len(self.queue_stats_history)
-        
+
         avg_total_time = sum(
             stat['total_time'] for stat in self.queue_stats_history
         ) / len(self.queue_stats_history)
-        
+
         avg_avg_prompt_size = sum(
             stat['avg_prompt_size'] for stat in self.queue_stats_history
         ) / len(self.queue_stats_history)
-        
+
         avg_prompt_instance_pending_token = sum(
             stat['prompt_instance_pending_token'] for stat in self.queue_stats_history
         ) / len(self.queue_stats_history)
-        
+
         # 清空历史数据，为下一次调用准备
         self.queue_stats_history.clear()
-        
-        return (avg_total_pending_prompt_queue_length, 
-                avg_total_pending_tokens, 
-                avg_total_time, 
-                avg_avg_prompt_size, 
+
+        return (avg_total_pending_prompt_queue_length,
+                avg_total_pending_tokens,
+                avg_total_time,
+                avg_avg_prompt_size,
                 avg_prompt_instance_pending_token)
 
     def get_period_result(self, mode=None):
