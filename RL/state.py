@@ -447,36 +447,36 @@ class RLStateCollector:
                 feature_names.append("rps_delta")
             idx += 1
         if cfg["needs_prompt_rate"]:
-            norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)
+            norm_vec.append(np.log1p(raw_vector[idx]) / 20.0)
             if self.debug_features:
                 feature_names.append("prompt_rate")
             idx += 1
         if cfg["needs_token_rate"]:
-            norm_vec.append(np.log1p(raw_vector[idx]) / 10.0)
+            norm_vec.append(np.log1p(raw_vector[idx]) / 20.0)
             if self.debug_features:
                 feature_names.append("token_rate")
             idx += 1
 
         # Length features
         if cfg["needs_prompt_len"]:
-            norm_vec.append(np.clip((raw_vector[idx]+1) / 4096.0, 0, 1))
+            norm_vec.append(np.log1p(raw_vector[idx]+0.01) / 20.0)
             if self.debug_features:
                 feature_names.append("prompt_len")
             idx += 1
         if cfg["needs_output_len"]:
-            norm_vec.append(np.clip((raw_vector[idx] +1)/ 2048.0, 0, 1))
+            norm_vec.append(np.log1p(raw_vector[idx]+0.01) / 20.0)
             if self.debug_features:
                 feature_names.append("output_len")
             idx += 1
 
         # Queue features
         if cfg["needs_p_queue"]:
-            norm_vec.append(np.log1p(raw_vector[idx]+1) / 20.0)
+            norm_vec.append(np.log1p(raw_vector[idx]+0.01) / 20.0)
             if self.debug_features:
                 feature_names.append("p_queue")
             idx += 1
         if cfg["needs_d_queue"]:
-            norm_vec.append(np.log1p(raw_vector[idx]+1) / 20.0)
+            norm_vec.append(np.log1p(raw_vector[idx]+0.01) / 20.0)
             if self.debug_features:
                 feature_names.append("d_queue")
             idx += 1
@@ -558,15 +558,15 @@ class RLStateCollector:
                 feature_names.append("draining_token")
             idx += 1
 
-        # None count features (瓶颈指标，使用log1p归一化)
+        # None count features (瓶颈指标，使用log1p归一化),最大值由请求量决定
         # 类似 last_action，两个代理都同时包含 prompt_none_count 和 token_none_count
         if cfg.get("needs_none_count", False):
-            norm_prompt_none = np.log1p(raw_vector[idx]+0.1) / 500.0
+            norm_prompt_none = (raw_vector[idx]+0.1) / 100.0
             norm_vec.append(norm_prompt_none)  # prompt_none_count
             if self.debug_features:
                 feature_names.append("prompt_none_count")
             idx += 1
-            norm_token_none = np.log1p(raw_vector[idx]+0.1) / 500.0
+            norm_token_none = (raw_vector[idx]+0.1) / 100.0
             norm_vec.append(norm_token_none)  # token_none_count
             if self.debug_features:
                 feature_names.append("token_none_count")

@@ -13,7 +13,7 @@ defaults:
   - override hydra/launcher: ray
   - _self_
 
-end_time: 86400
+end_time: 144
 debug: False
 seed: 0
 trace_list:
