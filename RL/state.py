@@ -293,9 +293,9 @@ class RLStateCollector:
             snapshot.append(avg_output_len)
 
         # --- B. 队列特征 (Queue) ---
-        sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size, prompt_instance_pending_token = self.get_scheduler_feature()
+        sch_queue_len,sch_p_queue_tokens, sch_d_queue_tokens, wait_time, avg_prompt_size, prompt_instance_pending_token = self.get_scheduler_feature()
         n_p, n_t, util_mem_p, util_mem_t, ins_p_queue, ins_d_queue = self.get_instance_feature()
-        
+
         if cfg["needs_p_queue"]:
             snapshot.append(sch_p_queue_tokens)
         if cfg["needs_d_queue"]:
@@ -401,7 +401,7 @@ class RLStateCollector:
         # reward_stats: 保持原有语义，给奖励函数使用的"快速指标"
         # 获取 usetime
         reward_stats = [prompt_rate, token_rate, sch_p_queue_tokens, sch_d_queue_tokens, n_p, n_t, avg_prompt_size, ttft, tbt,
-                        ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time,rps]
+                        ins_p_queue, ins_d_queue, avg_queue_time, avg_nth_token_overhead, use_time,rps,sch_queue_len]
         instance_num = [n_p, n_t, util_p, util_d]
 
         result = (np.array(snapshot, dtype=np.float32), instance_num, reward_stats, rps)
@@ -676,11 +676,12 @@ class RLStateCollector:
                 - prompt_instance_pending_token: prompt 实例待处理的 token 归一化值
         """
         scheduler = self.scheduler
-        total_pending_prompt_queue_length, total_pending_tokens, avg_time, avg_prompt_size, prompt_instance_pending_token\
+        total_pending_queue_length,total_pending_prompt_queue_length, total_pending_tokens, avg_time, avg_prompt_size, prompt_instance_pending_token\
             = scheduler.get_queue_stats()
         # print("sch堆积状态:",total_pending_prompt_queue_length,total_pending_tokens)
 
         return (
+            total_pending_queue_length,
             total_pending_prompt_queue_length,
             total_pending_tokens,
             avg_time,

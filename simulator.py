@@ -729,7 +729,7 @@ class TraceSACSimulator(Simulator):
         self.decision_interval = 2  # 决策间隔（秒）
 
         self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
-                                 "length","rate","","p_ins_pending_token"]
+                                 "length","rate","util_mem","p_ins_pending_token"]
         self.rl_config = {
             "w_cost": 0.4,
             "w_slo": 0.6,

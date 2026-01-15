@@ -42,7 +42,7 @@ def plot_second_column(csv_file, output_dir='./plots/'):
         ax1.grid(True, alpha=0.3)
         
         # 绘制平滑曲线图
-        smoothed_data = gaussian_filter1d(second_column, sigma=2)
+        smoothed_data = gaussian_filter1d(second_column, sigma=30)
         ax2.plot(smoothed_data, linewidth=2, color='red')
         ax2.set_xlabel('Index')
         ax2.set_ylabel('Value')
@@ -95,7 +95,7 @@ def plot_multiple_files(csv_files, output_dir='./plots/'):
             ax1.plot(second_column, label=filename, linewidth=1, alpha=0.7)
             
             # 绘制平滑曲线图
-            smoothed_data = gaussian_filter1d(second_column, sigma=2)
+            smoothed_data = gaussian_filter1d(second_column, sigma=30)
             ax2.plot(smoothed_data, label=filename, linewidth=2, alpha=0.7)
             
         except Exception as e:
