@@ -106,7 +106,7 @@ class RLRewardCalculator:
         
         blocking_rate_p = prompt_none_tokens / request_arrival_tokens
         blocking_rate_d = token_none_tokens / request_arrival_tokens
-        blocking_penalty = -self.w_queue * (blocking_rate_p + blocking_rate_d) * 100.0
+        blocking_penalty = -self.w_queue * (blocking_rate_p + blocking_rate_d)
         
         # -------------------------------------------------------------
         # 3. 内部饱和度惩罚 (Saturation Penalty) - 预警信号
@@ -117,7 +117,7 @@ class RLRewardCalculator:
         avg_pending_rate = total_p_instance_pending_tokens / (n_p * prompt_max_pending_batch_tokens)
         avg_pending_rate = np.clip(avg_pending_rate, 0.0, 1.0)
         # 使用平方惩罚：接近0时几乎无惩罚，接近1时惩罚急剧增加
-        saturation_penalty = -self.w_congestion * (avg_pending_rate ** 2) * 100.0
+        saturation_penalty = -self.w_congestion * (avg_pending_rate ** 2)
         
         # -------------------------------------------------------------
         # 4. 内存过载惩罚 (Memory Overload Penalty)
@@ -127,7 +127,7 @@ class RLRewardCalculator:
         
         if util_mem_t > self.UTIL_MEM_THRESHOLD:
             overflow = util_mem_t - self.UTIL_MEM_THRESHOLD
-            memory_penalty = -self.w_util * (overflow) * 100.0
+            memory_penalty = -self.w_util * (overflow)
         
 
         

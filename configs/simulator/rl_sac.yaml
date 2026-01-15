@@ -6,18 +6,18 @@ decision_interval: 2  # 决策间隔（秒）
 
 # 状态特征配置
 enabled_features:
-  - queue              # 队列特征 (p_queue, d_queue)
-  - none_count         # None计数 (prompt_none_count, token_none_count)
+#  - queue              # 队列特征 (p_queue, d_queue)
+#  - none_count         # None计数 (prompt_none_count, token_none_count)
   - instance_count     # 实例数 (n_p, n_t) - 归一化资源状态
   - timestamp          # 时间戳
   - rps                # 请求到达率 - norm_arrival_token_rate
   - rps_delta          # RPS变化率 - traffic_trend
-  - length             # 长度特征 (prompt_len, output_len)
-  - rate               # 速率特征 (prompt_rate, token_rate)
+#  - length             # 长度特征 (prompt_len, output_len)
+#  - rate               # 速率特征 (prompt_rate, token_rate)
   - util_mem           # 内存利用率 - d_memory_util_level
-  - draining           # 缩容状态
+#  - draining           # 缩容状态
   - p_ins_pending_token  # P实例pending - p_saturation_level
-  - queue_delta        # 队列变化率
+#  - queue_delta        # 队列变化率
   - io_ratio           # 输入/输出长度比
   - avg_batch_tokens   # 平均批次token数
   - rejection_rate     # 拒绝率 (p_rejection_rate, d_rejection_rate)
@@ -28,9 +28,9 @@ debug_features: false  # 是否启用调试特征
 # 奖励函数权重
 reward_weights:
   w_cost: 0.2      # 成本惩罚权重
-  w_queue: 1.0     # 队列惩罚权重（目标：队列数为0）
-  w_util: 1.0      # 利用率权重
-  w_congestion: 1.0 # 拥挤惩罚权重
+  w_queue: 10.0     # 队列惩罚权重（目标：队列数为0）
+  w_util: 10.0      # 利用率权重
+  w_congestion: 10.0 # 拥挤惩罚权重
   # 保留旧参数以兼容（已废弃）
   w_stability: 0.0
   w_slo: 0.0

@@ -1253,7 +1253,7 @@ class TraceSACSimulator(Simulator):
 
         # 3. SAC 训练（仿真评估模式下关闭训练）
         if (not self.eval_only and
-            # self.decision_step >= self.min_steps_before_training and
+            self.decision_step >= self.min_steps_before_training and
             self.decision_step % self.train_freq == 0 and
             self.replay_buffer.num_steps_can_sample() >= self.batch_size):
             print(f"Training at step {self.decision_step}...")
