@@ -5,18 +5,18 @@ algorithm: baseline_heteroscale
 decision_interval: 2  # 决策间隔（秒）
 
 enabled_features:
-  - queue              # 队列特征 (p_queue, d_queue)
-  - none_count         # None计数 (prompt_none_count, token_none_count)
+#  - queue              # 队列特征 (p_queue, d_queue)
+#  - none_count         # None计数 (prompt_none_count, token_none_count)
   - instance_count     # 实例数 (n_p, n_t) - 归一化资源状态
   - timestamp          # 时间戳
   - rps                # 请求到达率 - norm_arrival_token_rate
   - rps_delta          # RPS变化率 - traffic_trend
-  - length             # 长度特征 (prompt_len, output_len)
-  - rate               # 速率特征 (prompt_rate, token_rate)
+#  - length             # 长度特征 (prompt_len, output_len)
+#  - rate               # 速率特征 (prompt_rate, token_rate)
   - util_mem           # 内存利用率 - d_memory_util_level
-  - draining           # 缩容状态
+#  - draining           # 缩容状态
   - p_ins_pending_token  # P实例pending - p_saturation_level
-  - queue_delta        # 队列变化率
+#  - queue_delta        # 队列变化率
   - io_ratio           # 输入/输出长度比
   - avg_batch_tokens   # 平均批次token数
   - rejection_rate     # 拒绝率 (p_rejection_rate, d_rejection_rate)
@@ -40,7 +40,7 @@ min_instances_per_pool: 1
 max_total_instances: 200
 
 # 经验池保存配置（用于离线RL/预训练）
-save_replay_buffer: false              # 是否保存经验池
+save_replay_buffer: true              # 是否保存经验池
 replay_buffer_path: "data/replay_buffer_heteroscale.npz"  # 经验池保存路径
 clear_replay_buffer_on_start: false   # 启动时是否清空已有经验池（false=追加模式，true=覆盖模式）
 
