@@ -26,7 +26,7 @@ plots_dir = "../plots/motivation"
 os.makedirs(plots_dir, exist_ok=True)
 
 # Parameters from motivation.sh
-seed = 0
+seed = 1
 trace = "day_30"
 scheduler = "mixed_pool"
 model = "bloom-176b"
