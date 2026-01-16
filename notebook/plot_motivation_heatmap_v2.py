@@ -120,7 +120,7 @@ def get_slo(metric, quantile):
 
 # Test loading one configuration
 print("\nTesting data loading...")
-test_df, test_path = load_config_data(1, 1)
+test_df, test_path = load_config_data(10, 10)
 if test_df is not None:
     print(f"✓ Successfully loaded test configuration from: {test_path}")
     print(f"  Columns: {test_df.columns.tolist()}")
