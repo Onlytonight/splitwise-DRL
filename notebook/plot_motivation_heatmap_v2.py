@@ -20,7 +20,7 @@ from perf_model import PerfModel
 # ============================================================================
 # Configuration based on motivation.sh
 # ============================================================================
-results_dir = "../results/motivation"
+results_dir = "../results"
 perf_model_path = "../data/perf_model.csv"
 plots_dir = "../plots/motivation"
 os.makedirs(plots_dir, exist_ok=True)
@@ -30,8 +30,8 @@ seed = 0
 trace = "day_30"
 scheduler = "mixed_pool"
 model = "bloom-176b"
-autoscaling_policy = "no_autoscaling"
-cluster = "0_20"
+simulator = "no_autoscaling"
+cluster = "0_80"
 
 # Instance configurations to test
 prompt_instances = list(range(1, 11))  # 1 to 10
@@ -60,8 +60,8 @@ def load_config_data(prompt_num, token_num):
     """
     # Try multiple possible paths
     paths = [
-        f"{results_dir}/{seed}/{trace}/{prompt_num}_{token_num}/{model}/{scheduler}/{autoscaling_policy}/detailed/0.csv",
-        f"{results_dir}/{seed}/{trace}/{prompt_num}_{token_num}/{model}/{scheduler}/detailed/0.csv",
+        f"{results_dir}/{seed}/splitwise_{prompt_num}_{token_num}/{cluster}/{model}/{scheduler}/{simulator}/detailed/0.csv",
+        f"{results_dir}/{seed}/splitwise_{prompt_num}_{token_num}/{model}/{scheduler}/detailed/0.csv",
         f"../results/{seed}/splitwise_{prompt_num}_{token_num}/{trace}/{cluster}/{model}/{scheduler}/detailed/0.csv",
     ]
     
