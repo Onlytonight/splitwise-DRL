@@ -214,9 +214,10 @@ if loaded_count == 0:
 
 # Create results DataFrame
 results_df = pd.DataFrame(results)
+csv_path = os.path.join(plots_dir, "results_df.csv")
+results_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 print(f"Results DataFrame shape: {results_df.shape}")
-print(f"\n全部结果数据:")
-print(results_df)
+print(f"结果数据已保存至: {csv_path}")
 
 # ============================================================================
 # Create Heatmap Matrices
