@@ -215,8 +215,8 @@ if loaded_count == 0:
 # Create results DataFrame
 results_df = pd.DataFrame(results)
 print(f"Results DataFrame shape: {results_df.shape}")
-print(f"\nFirst few rows:")
-print(results_df.head())
+print(f"\n全部结果数据:")
+print(results_df)
 
 # ============================================================================
 # Create Heatmap Matrices
