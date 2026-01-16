@@ -34,8 +34,8 @@ simulator = "baseline_static_pd"
 cluster = "0_80"
 
 # Instance configurations to test
-prompt_instances = list(range(1, 11))  # 1 to 10
-token_instances = list(range(1, 11))   # 1 to 10
+prompt_instances = list(range(5, 26))  # 1 to 10
+token_instances = list(range(5, 26))   # 1 to 10
 
 # Metrics and quantiles
 metrics = ["ttft_slowdown", "tbt_slowdown", "e2e_slowdown"]
@@ -67,6 +67,7 @@ def load_config_data(prompt_num, token_num):
     
     for path in paths:
         try:
+            print(path)
             request_df = pd.read_csv(path)
             return request_df, path
         except Exception:
