@@ -60,7 +60,7 @@ def load_config_data(prompt_num, token_num):
     """
     # Try multiple possible paths
     paths = [
-        f"{results_dir}/{seed}/splitwise_{prompt_num}_{token_num}/{cluster}/{model}/{scheduler}/{simulator}/detailed/0.csv",
+        f"{results_dir}/{seed}/splitwise_{prompt_num}_{token_num}/{cluster}/{model}/{scheduler}/{simulator}/detailed/0_trace_1.csv",
         f"{results_dir}/{seed}/splitwise_{prompt_num}_{token_num}/{model}/{scheduler}/detailed/0.csv",
         f"../results/{seed}/splitwise_{prompt_num}_{token_num}/{trace}/{cluster}/{model}/{scheduler}/detailed/0.csv",
     ]
