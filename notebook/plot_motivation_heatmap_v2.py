@@ -30,7 +30,7 @@ seed = 0
 trace = "day_30"
 scheduler = "mixed_pool"
 model = "bloom-176b"
-simulator = "no_autoscaling"
+simulator = "baseline_static_pd"
 cluster = "0_80"
 
 # Instance configurations to test
