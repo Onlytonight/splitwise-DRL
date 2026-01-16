@@ -152,7 +152,7 @@ except Exception as e:
 
 # Define baseline configuration for normalization
 normalize_model = model
-normalize_hardware = "a100-80gb"
+normalize_hardware = "h100-80gb"
 normalize_tp = 8
 
 print(f"Baseline configuration: {normalize_model}, {normalize_hardware}, TP={normalize_tp}")
