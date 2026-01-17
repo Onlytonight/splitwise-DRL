@@ -89,7 +89,8 @@ def run_simulation(cfg):
                                 router=router,
                                 arbiter=arbiter,
                                 end_time=cfg.end_time,
-                                model_path=model_path)
+                                model_path=model_path,
+                                min_steps_before_training=cfg.get('min_steps_before_training', 0))
         
         # 初始化起始状态
         init_start_state(cfg,
@@ -167,7 +168,8 @@ def run_simulation(cfg):
                                 router=router,
                                 arbiter=arbiter,
                                 end_time=cfg.end_time,
-                                model_path=model_path)
+                                model_path=model_path,
+                                min_steps_before_training=cfg.get('min_steps_before_training', 0))
         
         # 如果设置了 trace_epochs > 1，循环使用同一个 trace
         for epoch in range(1, trace_epochs + 1):

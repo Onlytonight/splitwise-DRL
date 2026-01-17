@@ -354,7 +354,7 @@ class TraceRLSimulator(Simulator):
         self.last_token_action_executed = True
         self.last_prompt_action = 0.0  # 上一次 prompt 动作值
         self.last_token_action = 0.0  # 上一次 token 动作值
-        self.save_model_freq = 1000  # 保存模型频率
+        self.save_model_freq = 2000  # 保存模型频率
         self.finish_training = False
 
         # 在初始化时创建 RewardRecorder 实例，整个训练过程复用
@@ -719,7 +719,8 @@ class TraceSACSimulator(Simulator):
                  router,
                  arbiter,
                  end_time,
-                 model_path: str = None):
+                 model_path: str = None,
+                 min_steps_before_training: int = 0):
         super().__init__(end_time)
         self.trace = trace
         self.cluster = cluster
@@ -748,7 +749,7 @@ class TraceSACSimulator(Simulator):
         self.replay_buffer_size = int(1E6)
         self.batch_size = 256
         self.train_freq = 1
-        self.min_steps_before_training = 0  # 开始训练前的最小步数
+        self.min_steps_before_training = min_steps_before_training  # 从配置读取，开始训练前的最小步数
         self.save_model_freq = 1000
 
         rl_config = self.rl_config
