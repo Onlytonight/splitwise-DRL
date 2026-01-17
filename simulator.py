@@ -899,6 +899,12 @@ class TraceSACSimulator(Simulator):
             env_info_sizes={},
         )
 
+        # 从文件加载经验池（如果指定）
+        load_replay_buffer_path = simulator_cfg.get("load_replay_buffer_path", None)
+        if load_replay_buffer_path is not None:
+
+            self._load_replay_buffer(utils.get_original_cwd()+'/'+load_replay_buffer_path)
+
         # 初始化GPU设备（如果可用）
         # if ptu.device is None:
         #     # 检测GPU是否可用，如果可用则使用GPU，否则使用CPU
@@ -1018,6 +1024,49 @@ class TraceSACSimulator(Simulator):
             f"Avg Prompt_Time: {avg_queue_time:.3f} | "
             f"Avg Two_Token_Time: {avg_nth_token_overhead:.3f}"
         )
+
+    def _load_replay_buffer(self, buffer_path):
+        """从文件加载经验池到replay buffer
+
+        Args:
+            buffer_path: 经验池文件路径（.npz格式）
+        """
+        try:
+            # 允许相对路径（相对于当前工作目录）
+            if not os.path.isabs(buffer_path):
+                buffer_path = os.path.join(os.getcwd(), buffer_path)
+
+            if not os.path.isfile(buffer_path):
+                logging.warning(f"Replay buffer file does not exist: {buffer_path}")
+                return
+
+            logging.info(f"Loading replay buffer from: {buffer_path}")
+
+            # 加载经验数据
+            data = np.load(buffer_path)
+            observations = data['observations']
+            actions = data['actions']
+            rewards = data['rewards']
+            next_observations = data['next_observations']
+            terminals = data['terminals']
+
+            # 将经验添加到replay buffer
+            num_samples = len(observations)
+            for i in range(num_samples):
+                self.replay_buffer.add_sample(
+                    observation=observations[i],
+                    action=actions[i],
+                    reward=rewards[i],
+                    terminal=terminals[i],
+                    next_observation=next_observations[i],
+                    env_info={},
+                )
+
+            logging.info(f"Successfully loaded {num_samples} transitions into replay buffer")
+            logging.info(f"Current buffer size: {self.replay_buffer.num_steps_can_sample()}")
+
+        except Exception as e:
+            logging.exception(f"Failed to load replay buffer from '{buffer_path}': {e}")
 
     def reset_for_new_trace(self, new_trace, new_cluster=None, new_applications=None,
                             new_router=None, new_arbiter=None, trace_index=None):
