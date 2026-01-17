@@ -27,10 +27,11 @@ trace_list_repeats: 1000  # trace_list 的循环次数
 
 # SAC 训练参数
 min_steps_before_training: 0  # 开始训练前的最小步数
+exclude_feature: null  # 要排除的 feature，可选值: queue, none_count, instance_count, timestamp, rps, rps_delta, length, rate, p_ins_pending_token，null 表示不排除任何 feature
 
 choices: ${hydra:runtime.choices}
 #output_dir: results/${seed}/${start_state.state_type}/${trace.filename}/${cluster.servers.0.count}_${cluster.servers.1.count}/${applications.0.model_architecture}/${applications.0.scheduler}
-output_dir: results/adjust/${min_steps_before_training}
+output_dir: results/state/${exclude_feature}
 
 hydra:
   # changes the cwd to the output directory

@@ -720,7 +720,8 @@ class TraceSACSimulator(Simulator):
                  arbiter,
                  end_time,
                  model_path: str = None,
-                 min_steps_before_training: int = 0):
+                 min_steps_before_training: int = 0,
+                 exclude_feature: str = None):
         super().__init__(end_time)
         self.trace = trace
         self.cluster = cluster
@@ -729,8 +730,19 @@ class TraceSACSimulator(Simulator):
         self.arbiter = arbiter
         self.decision_interval = 2  # 决策间隔（秒）
 
-        self.enabled_features = ["queue", "none_count", "instance_count",'timestamp','rps','rps_delta',
-                                 "length","rate","","p_ins_pending_token"]
+        # 默认的 enabled_features
+        default_features = ["queue", "none_count", "instance_count", "timestamp", "rps", "rps_delta",
+                           "length", "rate", "p_ins_pending_token"]
+        
+        # 如果指定了要排除的 feature，则从默认列表中移除
+        if exclude_feature is not None and exclude_feature in default_features:
+            self.enabled_features = [f for f in default_features if f != exclude_feature]
+            logging.info(f"Excluding feature '{exclude_feature}' from enabled_features. Remaining features: {self.enabled_features}")
+        else:
+            self.enabled_features = default_features
+            if exclude_feature is not None:
+                logging.warning(f"Feature '{exclude_feature}' not found in default features, using all default features")
+                
         self.rl_config = {
             "w_cost": 0.4,
             "w_slo": 0.6,
