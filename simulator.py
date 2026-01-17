@@ -11,12 +11,12 @@ from RL.action import RLActionExecutor
 from RL.PPO import PPO
 import numpy as np
 import torch
-import rlkit.rlkit.torch.pytorch_util as ptu
-from rlkit.rlkit.data_management.simple_replay_buffer import SimpleReplayBuffer
-from rlkit.rlkit.torch.sac.policies import TanhGaussianPolicy, MakeDeterministic
-from rlkit.rlkit.torch.sac.sac import SACTrainer
-from rlkit.rlkit.torch.networks import ConcatMlp
-from rlkit.rlkit.torch.core import np_to_pytorch_batch
+import rlkit.torch.pytorch_util as ptu
+from rlkit.data_management.simple_replay_buffer import SimpleReplayBuffer
+from rlkit.torch.sac.policies import TanhGaussianPolicy, MakeDeterministic
+from rlkit.torch.sac.sac import SACTrainer
+from rlkit.torch.networks import ConcatMlp
+from rlkit.torch.core import np_to_pytorch_batch
 # global simulator that drives the simulation
 # bad practice, but it works for now
 sim = None
