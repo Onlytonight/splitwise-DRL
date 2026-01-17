@@ -718,18 +718,22 @@ class TraceSACSimulator(Simulator):
                  applications,
                  router,
                  arbiter,
-                 end_time,
-                 model_path: str = None,
-                 min_steps_before_training: int = 0,
-                 exclude_feature: str = None):
-        super().__init__(end_time)
+                 cfg):
+        super().__init__(cfg.end_time)
         self.trace = trace
         self.cluster = cluster
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
+        self.cfg = cfg  # 保存配置对象
         self.decision_interval = 2  # 决策间隔（秒）
 
+        # 从配置读取排除的 feature
+        exclude_feature = cfg.get('exclude_feature', None)
+        # 如果 exclude_feature 是 "none" 字符串，视为 None
+        if exclude_feature == "none":
+            exclude_feature = None
+            
         # 默认的 enabled_features
         default_features = ["queue", "none_count", "instance_count", "timestamp", "rps", "rps_delta",
                            "length", "rate", "p_ins_pending_token"]
@@ -753,16 +757,22 @@ class TraceSACSimulator(Simulator):
             "min_instances_per_pool": 1,
             "max_total_instances": 100,
             "stack_size": 1,
-            "debug_features":False
+            "debug_features": False
         }
 
-        # SAC 超参数
-        self.layer_size = 256  # 网络隐藏层大小
-        self.replay_buffer_size = int(1E6)
-        self.batch_size = 256
-        self.train_freq = 1
-        self.min_steps_before_training = min_steps_before_training  # 从配置读取，开始训练前的最小步数
-        self.save_model_freq = 1000
+        # SAC 超参数 - 从配置读取
+        sac_cfg = cfg.get('sac', {})
+        self.layer_size = sac_cfg.get('layer_size', 256)
+        self.replay_buffer_size = sac_cfg.get('replay_buffer_size', int(1E6))
+        self.batch_size = sac_cfg.get('batch_size', 256)
+        self.train_freq = sac_cfg.get('train_freq', 1)
+        self.min_steps_before_training = sac_cfg.get('min_steps_before_training', 0)
+        self.save_model_freq = sac_cfg.get('save_model_freq', 1000)
+        self.policy_lr = sac_cfg.get('policy_lr', 3E-4)
+        self.qf_lr = sac_cfg.get('qf_lr', 3E-4)
+        
+        # 从配置读取 model_path
+        self.model_path = cfg.get('model_path', None)
 
         rl_config = self.rl_config
         self.stack_size = self.rl_config.get("stack_size", 1)
@@ -848,8 +858,8 @@ class TraceSACSimulator(Simulator):
             discount=0.99,
             soft_target_tau=5e-3,
             target_update_period=1,
-            policy_lr=3E-4,
-            qf_lr=3E-4,
+            policy_lr=self.policy_lr,
+            qf_lr=self.qf_lr,
             reward_scale=1,
             use_automatic_entropy_tuning=True,
         )
@@ -880,9 +890,9 @@ class TraceSACSimulator(Simulator):
         self.target_qf2.to(ptu.device)
 
         # 如果提供了模型路径，则尝试从该路径加载 checkpoint（不再在目录中随机选择）
-        if model_path is not None:
+        if self.model_path is not None:
             try:
-                ckpt_path = model_path
+                ckpt_path = self.model_path
                 # 允许相对路径（相对于当前工作目录）
                 if not os.path.isabs(ckpt_path):
                     ckpt_path = os.path.join(os.getcwd(), ckpt_path)
@@ -907,7 +917,7 @@ class TraceSACSimulator(Simulator):
 
                     logging.info("SAC model loaded successfully from checkpoint")
             except Exception as e:
-                logging.exception(f"Failed to load SAC model from path '{model_path}': {e}")
+                logging.exception(f"Failed to load SAC model from path '{self.model_path}': {e}")
 
         # 训练状态追踪
         # 训练 / 评估状态追踪
@@ -917,9 +927,9 @@ class TraceSACSimulator(Simulator):
         self.last_action_executed = True
         self.finish_training = False
 
-        # 如果提供了 model_path，默认认为是“仿真评估模式”：不再训练和定时保存模型
+        # 如果提供了 model_path，默认认为是"仿真评估模式"：不再训练和定时保存模型
         # 也可以在之后根据需要扩展成从配置显式控制
-        self.eval_only = model_path is not None
+        self.eval_only = self.model_path is not None
 
         # 在初始化时创建 RewardRecorder 实例，整个训练过程复用
         self.reward_recorder = RewardRecorder("reward_sac.csv", clear_file=True, buffer_size=100)

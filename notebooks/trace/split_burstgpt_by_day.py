@@ -3,10 +3,10 @@ import os
 from collections import defaultdict
 
 # 配置
-input_file = 'data/BurstGPT_without_fails_1.csv'
-output_dir = 'traces/burst'
+input_file = '../../../data/BurstGPT_without_fails_1.csv'
+output_dir = '../../../traces/burst_144'
 SECONDS_PER_DAY = 86400  # 一天86400秒
-MAPPED_DAY_LENGTH = 60  # 映射后一天的长度（秒）
+MAPPED_DAY_LENGTH = 144  # 映射后一天的长度（秒）
 
 # 确保输出目录存在
 os.makedirs(output_dir, exist_ok=True)

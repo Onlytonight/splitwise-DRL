@@ -56,9 +56,6 @@ def run_simulation(cfg):
     trace_epochs = getattr(cfg, 'trace_epochs', 1)
     # 获取 trace_list_repeats 配置（trace_list 的循环次数）
     trace_list_repeats = getattr(cfg, 'trace_list_repeats', 1)
-
-    # 如果配置中提供了 model_path，则传递给模拟器，用于从该路径加载已训练好的模型
-    model_path = getattr(cfg, 'model_path', None)
     
     # 检查是否有 trace_list 配置，如果有则循环训练多个 trace
     if hasattr(cfg, 'trace_list') and cfg.trace_list is not None and len(cfg.trace_list) > 0:
@@ -88,10 +85,7 @@ def run_simulation(cfg):
                                 applications=applications,
                                 router=router,
                                 arbiter=arbiter,
-                                end_time=cfg.end_time,
-                                model_path=model_path,
-                                min_steps_before_training=cfg.get('min_steps_before_training', 0),
-                                exclude_feature=cfg.get('exclude_feature', None))
+                                cfg=cfg)
         
         # 初始化起始状态
         init_start_state(cfg,
@@ -168,10 +162,7 @@ def run_simulation(cfg):
                                 applications=applications,
                                 router=router,
                                 arbiter=arbiter,
-                                end_time=cfg.end_time,
-                                model_path=model_path,
-                                min_steps_before_training=cfg.get('min_steps_before_training', 0),
-                                exclude_feature=cfg.get('exclude_feature', None))
+                                cfg=cfg)
         
         # 如果设置了 trace_epochs > 1，循环使用同一个 trace
         for epoch in range(1, trace_epochs + 1):
