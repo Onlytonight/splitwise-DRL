@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import rlkit.torch.pytorch_util as ptu
 from rlkit.data_management.simple_replay_buffer import SimpleReplayBuffer
+from rlkit.data_management.prioritized_replay_buffer import PrioritizedReplayBuffer
 from rlkit.torch.sac.policies import TanhGaussianPolicy, MakeDeterministic
 from rlkit.torch.sac.sac import SACTrainer
 from rlkit.torch.networks import ConcatMlp
@@ -241,20 +242,20 @@ class TraceRLSimulator(Simulator):
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
-        
+
         # 从配置文件读取参数（如果没有提供则使用默认值）
         if simulator_cfg is None:
             simulator_cfg = {}
-        
+
         # 决策间隔
         self.decision_interval = simulator_cfg.get("decision_interval", 2)
-        
+
         # 特征配置
         self.enabled_features = simulator_cfg.get("enabled_features",
             ["queue", "none_count", "instance_count"])
         self.stack_size = simulator_cfg.get("stack_size", 4)
         debug_features = simulator_cfg.get("debug_features", False)
-        
+
         # 奖励权重配置
         reward_weights = simulator_cfg.get("reward_weights", {})
         self.rl_config = {
@@ -313,7 +314,7 @@ class TraceRLSimulator(Simulator):
         # 从配置文件读取网络超参数
         network_cfg = simulator_cfg.get("network", {})
         self.hidden_dim = network_cfg.get("hidden_dim", 64)
-        
+
         # 从配置文件读取训练超参数
         training_cfg = simulator_cfg.get("training", {})
         self.has_continuous_action_space = training_cfg.get("has_continuous_action_space", True)
@@ -321,14 +322,14 @@ class TraceRLSimulator(Simulator):
         self.action_std_decay_rate = training_cfg.get("action_std_decay_rate", 0.05)
         self.min_action_std = training_cfg.get("min_action_std", 0.1)
         self.action_std_decay_freq = training_cfg.get("action_std_decay_freq", 1000)
-        
+
         self.update_timestep = training_cfg.get("update_timestep", 10)
         self.K_epochs = training_cfg.get("K_epochs", 40)
         self.eps_clip = training_cfg.get("eps_clip", 0.2)
         self.gamma = training_cfg.get("gamma", 0.99)
         self.lr_actor = training_cfg.get("lr_actor", 0.0003)
         self.lr_critic = training_cfg.get("lr_critic", 0.001)
-        
+
         # 模型保存频率和目录
         self.save_model_freq = simulator_cfg.get("save_model_freq", 1000)
         self.checkpoint_dir = simulator_cfg.get("checkpoint_dir", "cp")
@@ -746,22 +747,22 @@ class TraceSACSimulator(Simulator):
         self.applications = applications
         self.router = router
         self.arbiter = arbiter
-        
+
         # 从配置文件读取参数（如果没有提供则使用默认值）
         if simulator_cfg is None:
             # 默认配置（保持向后兼容）
             simulator_cfg = {}
-        
+
         # 决策间隔
         self.decision_interval = simulator_cfg.get("decision_interval", 2)
-        
+
         # 特征配置
-        self.enabled_features = simulator_cfg.get("enabled_features", 
+        self.enabled_features = simulator_cfg.get("enabled_features",
             ["queue", "none_count", "instance_count", 'timestamp', 'rps', 'rps_delta',
              "length", "rate", "util_mem", 'draining', "p_ins_pending_token", "queue_delta"])
         self.stack_size = simulator_cfg.get("stack_size", 1)
         debug_features = simulator_cfg.get("debug_features", False)
-        
+
         # 奖励权重配置
         reward_weights = simulator_cfg.get("reward_weights", {})
         self.rl_config = {
@@ -780,7 +781,7 @@ class TraceSACSimulator(Simulator):
         # SAC 网络超参数
         network_cfg = simulator_cfg.get("network", {})
         self.layer_size = network_cfg.get("layer_size", 256)
-        
+
         # SAC 训练超参数
         training_cfg = simulator_cfg.get("training", {})
         self.replay_buffer_size = training_cfg.get("replay_buffer_size", int(1E6))
@@ -788,7 +789,7 @@ class TraceSACSimulator(Simulator):
         self.train_freq = training_cfg.get("train_freq", 30)
         self.min_steps_before_training = training_cfg.get("min_steps_before_training", 1000)
         self.save_model_freq = simulator_cfg.get("save_model_freq", 1000)
-        
+
         # SAC trainer 参数
         self.discount = training_cfg.get("discount", 0.99)
         self.soft_target_tau = training_cfg.get("soft_target_tau", 5e-3)
@@ -797,9 +798,9 @@ class TraceSACSimulator(Simulator):
         self.qf_lr = training_cfg.get("qf_lr", 3E-4)
         self.reward_scale = training_cfg.get("reward_scale", 1)
         self.use_automatic_entropy_tuning = training_cfg.get("use_automatic_entropy_tuning", True)
-        
 
-        
+
+
         # checkpoint 目录
         self.checkpoint_dir = simulator_cfg.get("checkpoint_dir", "cp")
 
@@ -891,12 +892,18 @@ class TraceSACSimulator(Simulator):
             use_automatic_entropy_tuning=self.use_automatic_entropy_tuning,
         )
 
-        # 创建经验回放缓冲区（直接使用 SimpleReplayBuffer，不依赖 env）
-        self.replay_buffer = SimpleReplayBuffer(
+        # 创建经验回放缓冲区
+        # 使用优先经验回放 + 重要性采样
+        self.replay_buffer = PrioritizedReplayBuffer(
             max_replay_buffer_size=self.replay_buffer_size,
             observation_dim=obs_dim,
             action_dim=action_dim,
             env_info_sizes={},
+            replace=True,
+            alpha=0.6,
+            beta=0.4,
+            beta_increment_per_sampling=1e-3,
+            eps=1e-6,
         )
 
         # 初始化GPU设备（如果可用）
@@ -1199,9 +1206,45 @@ class TraceSACSimulator(Simulator):
             self.replay_buffer.num_steps_can_sample() >= self.batch_size):
 
             batch = self.replay_buffer.random_batch(self.batch_size)
+            indices = batch.get('indices', None)
             # 在加入训练之前将numpy batch转换为tensor
-            batch = np_to_pytorch_batch(batch)
-            self.trainer.train_from_torch(batch)
+            torch_batch = np_to_pytorch_batch(batch)
+            self.trainer.train_from_torch(torch_batch)
+
+            # 使用当前 Q 网络计算 TD 误差并更新优先级
+            if indices is not None and hasattr(self.replay_buffer, "update_priorities"):
+                with torch.no_grad():
+                    rewards = torch_batch['rewards']
+                    terminals = torch_batch['terminals']
+                    obs = torch_batch['observations']
+                    actions = torch_batch['actions']
+                    next_obs = torch_batch['next_observations']
+
+                    # 计算当前 alpha（自动熵调节）
+                    if self.trainer.use_automatic_entropy_tuning:
+                        alpha = self.trainer.log_alpha.exp()
+                    else:
+                        alpha = torch.tensor(1.0, device=ptu.device)
+
+                    # 目标 Q 值
+                    next_dist = self.trainer.policy(next_obs)
+                    new_next_actions, new_log_pi = next_dist.rsample_and_logprob()
+                    new_log_pi = new_log_pi.unsqueeze(-1)
+                    target_q_values = torch.min(
+                        self.trainer.target_qf1(next_obs, new_next_actions),
+                        self.trainer.target_qf2(next_obs, new_next_actions),
+                    ) - alpha * new_log_pi
+                    q_target = self.trainer.reward_scale * rewards + (
+                        1. - terminals
+                    ) * self.trainer.discount * target_q_values
+
+                    # 当前 Q 估计
+                    q1_pred = self.trainer.qf1(obs, actions)
+                    q2_pred = self.trainer.qf2(obs, actions)
+                    q_pred = 0.5 * (q1_pred + q2_pred)
+
+                    td_errors = (q_pred - q_target).abs().cpu().numpy().flatten()
+                self.replay_buffer.update_priorities(indices, td_errors)
 
         # 4. 保存模型（仿真评估模式下不再定时保存模型）
         if (not self.eval_only and

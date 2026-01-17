@@ -68,6 +68,14 @@ training:
   reward_scale: 1              # 奖励缩放
   use_automatic_entropy_tuning: true  # 是否使用自动熵调节
 
+
+# 优先经验回放参数
+prioritized_replay:
+  alpha: 0.6                   # 优先级指数
+  beta: 0.4                    # 重要性采样初始值
+  beta_increment_per_sampling: 0.001  # beta增量
+  eps: 0.000001                # 防止除零的小值
+
 # 模型保存
 save_model_freq: 1000          # 保存模型频率（每多少步）
 checkpoint_dir: cp             # checkpoint保存目录
